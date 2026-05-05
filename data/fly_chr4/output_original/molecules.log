@@ -1,0 +1,13 @@
+/home/vscode/.local/bin/physlr:4: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+  __import__('pkg_resources').require('physlr==1.0.4')
+0 Reading /workspaces/physlr-next/data/fly_chr4/output/reads.overlap.filtered.tsv
+ 0.0% 00:00 ETA ?           100.0% 00:00 ETA 00:00 ██████████
+0 Read /workspaces/physlr-next/data/fly_chr4/output/reads.overlap.filtered.tsv
+0 Separating barcodes into molecules using the following algorithm(s):
+	 bc + cc
+ 0.0% 00:00 ETA ?           51.1% 00:01 ETA 00:00 █████     100.0% 00:02 ETA 00:00 ██████████
+2 Identified molecules
+2 Identified 612 molecules in 1500 barcodes. 0.41 mean molecules per barcode
+2 Separated molecules
+2 Removed 65 isolated vertices.
+2 Wrote graph
