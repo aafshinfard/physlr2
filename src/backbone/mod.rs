@@ -259,7 +259,197 @@ pub fn extract_named_backbones(g: &NamedGraph, config: &BackboneConfig) -> Vec<V
         total_nodes
     );
 
-    all_paths
+    // Merge paths that are connected through the original graph
+    let merged = merge_adjacent_named_paths(&all_paths, g, config.min_path_size);
+    log::info!(
+        "After merging: {} paths ({} molecules)",
+        merged.len(),
+        merged.iter().map(|p| p.len()).sum::<usize>()
+    );
+
+    merged
+}
+
+/// Merge backbone paths that are connected through the original molecule graph.
+///
+/// Two paths can be merged if an endpoint of one path shares a neighbor
+/// in the original graph with an endpoint of another path, and that
+/// neighbor is not already in any backbone path.
+///
+/// This bridges gaps caused by pruning or junction splitting.
+fn merge_adjacent_named_paths(
+    paths: &[Vec<String>],
+    g: &NamedGraph,
+    min_path_size: usize,
+) -> Vec<Vec<String>> {
+    if paths.len() <= 1 {
+        return paths.to_vec();
+    }
+
+    // Build set of all backbone node names
+    let mut backbone_names: FxHashSet<&str> = FxHashSet::default();
+    for path in paths {
+        for name in path {
+            backbone_names.insert(name.as_str());
+        }
+    }
+
+    // Map endpoint names to (path_index, is_last_endpoint)
+    let mut endpoint_to_path: FxHashMap<&str, (usize, bool)> = FxHashMap::default();
+    for (i, path) in paths.iter().enumerate() {
+        if path.len() >= 2 {
+            endpoint_to_path.insert(path[0].as_str(), (i, false));
+            endpoint_to_path.insert(path.last().unwrap().as_str(), (i, true));
+        }
+    }
+
+    // Find merge candidates: pairs of paths whose endpoints are connected
+    // through the original graph (directly or via one non-backbone bridge node).
+    let mut merge_edges: Vec<(usize, usize, bool, bool)> = Vec::new();
+
+    for (&ep_name, &(path_idx, is_last)) in &endpoint_to_path {
+        let ep_node = match g.names.get_idx(ep_name) {
+            Some(idx) => idx,
+            None => continue,
+        };
+        if g.graph.node_weight(ep_node).is_none() {
+            continue;
+        }
+
+        for neighbor in g.graph.neighbors(ep_node) {
+            let neighbor_name = match g.names.get_name(neighbor) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Direct: endpoint -> other_endpoint
+            if let Some(&(other_path, other_is_last)) = endpoint_to_path.get(neighbor_name) {
+                if other_path != path_idx {
+                    merge_edges.push((path_idx, other_path, is_last, other_is_last));
+                }
+            }
+
+            // One-hop bridge: endpoint -> bridge -> other_endpoint
+            if !backbone_names.contains(neighbor_name) {
+                for neighbor2 in g.graph.neighbors(neighbor) {
+                    let n2_name = match g.names.get_name(neighbor2) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if let Some(&(other_path, other_is_last)) = endpoint_to_path.get(n2_name) {
+                        if other_path != path_idx {
+                            merge_edges.push((path_idx, other_path, is_last, other_is_last));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if merge_edges.is_empty() {
+        let mut result = paths.to_vec();
+        result.retain(|p| p.len() >= min_path_size);
+        result.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        return result;
+    }
+
+    log::info!("Found {} merge candidates between path endpoints", merge_edges.len());
+
+    // Union-find to group paths
+    let n = paths.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut merge_info: FxHashMap<(usize, usize), (bool, bool)> = FxHashMap::default();
+
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent, parent[x]);
+        }
+        parent[x]
+    }
+
+    // Prefer merging larger paths first
+    merge_edges.sort_by_key(|&(a, b, _, _)| {
+        std::cmp::Reverse(paths[a].len().min(paths[b].len()))
+    });
+
+    for (a, b, a_is_last, b_is_last) in merge_edges {
+        let ra = find(&mut parent, a);
+        let rb = find(&mut parent, b);
+        if ra != rb {
+            parent[ra] = rb;
+            merge_info.insert((a, b), (a_is_last, b_is_last));
+        }
+    }
+
+    // Group paths by root
+    let mut groups: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+
+    let mut result: Vec<Vec<String>> = Vec::new();
+    for (_root, group) in &groups {
+        if group.len() == 1 {
+            result.push(paths[group[0]].clone());
+            continue;
+        }
+
+        // Build adjacency among paths in this group
+        let group_set: FxHashSet<usize> = group.iter().copied().collect();
+        let mut path_adj: FxHashMap<usize, Vec<(usize, bool, bool)>> = FxHashMap::default();
+
+        for (&(a, b), &(a_last, b_last)) in &merge_info {
+            if group_set.contains(&a) && group_set.contains(&b) {
+                path_adj.entry(a).or_default().push((b, a_last, b_last));
+                path_adj.entry(b).or_default().push((a, b_last, a_last));
+            }
+        }
+
+        // Start from a path with degree ≤ 1 in the path adjacency graph
+        let start = group.iter().copied()
+            .find(|&p| path_adj.get(&p).map_or(0, |v| v.len()) <= 1)
+            .unwrap_or(group[0]);
+
+        let mut chain: Vec<String> = Vec::new();
+        let mut visited_paths: FxHashSet<usize> = FxHashSet::default();
+        let mut current = start;
+        let mut need_reverse = false;
+
+        loop {
+            visited_paths.insert(current);
+            let mut p = paths[current].clone();
+            if need_reverse {
+                p.reverse();
+            }
+            chain.extend(p);
+
+            let next = path_adj.get(&current).and_then(|adjs| {
+                adjs.iter().find(|(other, _, _)| !visited_paths.contains(other))
+            }).copied();
+
+            match next {
+                Some((next_path, _my_is_last, other_is_last)) => {
+                    need_reverse = other_is_last;
+                    current = next_path;
+                }
+                None => break,
+            }
+        }
+
+        // Add unchained paths from this group
+        for &p in group {
+            if !visited_paths.contains(&p) {
+                result.push(paths[p].clone());
+            }
+        }
+
+        result.push(chain);
+    }
+
+    result.retain(|p| p.len() >= min_path_size);
+    result.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    result
 }
 
 /// Extract backbone paths from all trees in the MST.
@@ -336,37 +526,26 @@ fn detect_junctions(
 
 /// Split a tree at junction nodes.
 ///
-/// Matches original `split_junctions_of_tree`:
-///   For each junction: keep the two heaviest edges, remove the rest
+/// Matches original `split_junctions_of_tree` with `keep_largest=0` (default):
+///   For each junction: remove ALL edges (disconnecting the junction entirely)
 ///   Then find connected components and extract diameter paths
 fn split_at_junctions(
     tree: &OverlapGraph,
     component: &[NodeIndex],
     junctions: &[NodeIndex],
 ) -> Vec<Vec<NodeIndex>> {
-    let _junction_set: FxHashSet<NodeIndex> = junctions.iter().copied().collect();
-
-    // Find edges to remove at each junction
+    // Remove ALL edges at junctions (matching original keep_largest=0 default)
     let mut edges_to_skip: FxHashSet<(NodeIndex, NodeIndex)> = FxHashSet::default();
 
     for &junction in junctions {
-        let mut edges: Vec<(NodeIndex, NodeIndex, u32)> = tree
-            .edges(junction)
-            .map(|e| {
-                let other = if e.source() == junction {
-                    e.target()
-                } else {
-                    e.source()
-                };
-                (junction, other, e.weight().m)
-            })
-            .collect();
-        edges.sort_by_key(|e| std::cmp::Reverse(e.2));
-
-        // Remove all but the two heaviest edges
-        for (u, v, _) in edges.iter().skip(2) {
-            edges_to_skip.insert((*u, *v));
-            edges_to_skip.insert((*v, *u));
+        for edge in tree.edges(junction) {
+            let other = if edge.source() == junction {
+                edge.target()
+            } else {
+                edge.source()
+            };
+            edges_to_skip.insert((junction, other));
+            edges_to_skip.insert((other, junction));
         }
     }
 
