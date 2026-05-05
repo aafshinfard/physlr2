@@ -1,0 +1,327 @@
+"""
+Physlr: Next-generation physical maps from linked reads.
+
+Snakemake workflow for the full Physlr pipeline:
+  1. Index minimizers from linked reads
+  2. Filter barcodes and minimizers
+  3. Compute barcode overlap graph
+  4. Separate barcodes into molecules
+  5. Extract backbone paths (physical map)
+  6. Map draft assembly contigs to physical map
+  7. Scaffold the draft assembly
+  8. Generate reports and visualizations
+"""
+
+import os
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+configfile: "config.yaml"
+
+# Paths
+PHYSLR = config.get("physlr_bin", "target/release/physlr")
+OUTDIR = config.get("outdir", "output")
+PREFIX = config.get("prefix", "physlr")
+
+# Input files
+LINKED_READS = config["linked_reads"]
+DRAFT_ASSEMBLIES = config.get("draft_assemblies", {})
+REFERENCE = config.get("reference", "")
+GENOME_SIZE = config.get("genome_size", 0)
+
+# Parameters
+K = config.get("k", 32)
+W = config.get("w", 32)
+MIN_BX = config.get("min_bx_count", 100)
+MAX_BX = config.get("max_bx_count", 5000)
+MIN_OVERLAP = config.get("min_overlap", 10)
+EDGE_PERCENTILE = config.get("edge_percentile", 90.0)
+PRUNE_BRANCHES = config.get("prune_branches", 10)
+MIN_PATH_SIZE = config.get("min_path_size", 50)
+MIN_MAP_SCORE = config.get("min_map_score", 10)
+GAP_SIZE = config.get("gap_size", 100)
+INDEXER = config.get("indexer", "builtin")
+INDEXER_THREADS = config.get("indexer_threads", 1)
+
+# ─── Helper functions ─────────────────────────────────────────────────────────
+
+def genome_size_flag():
+    if GENOME_SIZE > 0:
+        return f"-g {GENOME_SIZE}"
+    return ""
+
+# ─── Default target ──────────────────────────────────────────────────────────
+
+DRAFT_NAMES = list(DRAFT_ASSEMBLIES.keys())
+
+rule all:
+    input:
+        # Physical map outputs
+        f"{OUTDIR}/{PREFIX}.backbone.path",
+        f"{OUTDIR}/{PREFIX}.backbone.metrics.tsv",
+        f"{OUTDIR}/{PREFIX}.backbone.dot",
+        # Scaffolded assemblies
+        expand(f"{OUTDIR}/{PREFIX}.{{draft}}.scaffolds.fa", draft=DRAFT_NAMES),
+        expand(f"{OUTDIR}/{PREFIX}.{{draft}}.report.json", draft=DRAFT_NAMES),
+        # Quast reports (if reference provided)
+        expand(f"{OUTDIR}/quast/{{draft}}_before/report.tsv", draft=DRAFT_NAMES) if REFERENCE else [],
+        expand(f"{OUTDIR}/quast/{{draft}}_after/report.tsv", draft=DRAFT_NAMES) if REFERENCE else [],
+
+# ─── Physical Map Pipeline ───────────────────────────────────────────────────
+
+rule index_reads:
+    """Extract minimizers from linked reads."""
+    input:
+        reads=LINKED_READS
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.reads.mxs.tsv"
+    log:
+        f"{OUTDIR}/logs/index_reads.log"
+    threads: workflow.cores
+    shell:
+        """
+        {PHYSLR} index {input.reads} -o {output.tsv} -k {K} -w {W} \
+            --indexer {INDEXER} -t {INDEXER_THREADS} 2> {log}
+        """
+
+rule filter_minimizers:
+    """Filter barcodes and remove singleton/repetitive minimizers."""
+    input:
+        tsv=f"{OUTDIR}/{PREFIX}.reads.mxs.tsv"
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.filtered.mxs.tsv"
+    log:
+        f"{OUTDIR}/logs/filter_minimizers.log"
+    shell:
+        """
+        {PHYSLR} filter-minimizers {input.tsv} -o {output.tsv} \
+            -n {MIN_BX} -N {MAX_BX} 2> {log}
+        """
+
+rule overlap:
+    """Compute barcode overlap graph."""
+    input:
+        tsv=f"{OUTDIR}/{PREFIX}.filtered.mxs.tsv"
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.overlap.tsv"
+    log:
+        f"{OUTDIR}/logs/overlap.log"
+    threads: workflow.cores
+    shell:
+        """
+        {PHYSLR} overlap {input.tsv} -o {output.tsv} \
+            --min-shared {MIN_OVERLAP} -t {threads} 2> {log}
+        """
+
+rule filter_overlap:
+    """Filter edges from the overlap graph."""
+    input:
+        tsv=f"{OUTDIR}/{PREFIX}.overlap.tsv"
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.overlap.filtered.tsv"
+    log:
+        f"{OUTDIR}/logs/filter_overlap.log"
+    shell:
+        """
+        {PHYSLR} filter-overlap {input.tsv} -o {output.tsv} \
+            --percentile {EDGE_PERCENTILE} 2> {log}
+        """
+
+rule molecules:
+    """Separate barcodes into molecules."""
+    input:
+        tsv=f"{OUTDIR}/{PREFIX}.overlap.filtered.tsv"
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.mol.tsv"
+    log:
+        f"{OUTDIR}/logs/molecules.log"
+    threads: workflow.cores
+    shell:
+        """
+        {PHYSLR} molecules {input.tsv} -o {output.tsv} -t {threads} 2> {log}
+        """
+
+rule backbone:
+    """Extract backbone paths (physical map)."""
+    input:
+        tsv=f"{OUTDIR}/{PREFIX}.mol.tsv"
+    output:
+        path=f"{OUTDIR}/{PREFIX}.backbone.path"
+    log:
+        f"{OUTDIR}/logs/backbone.log"
+    shell:
+        """
+        {PHYSLR} backbone {input.tsv} -o {output.path} \
+            --prune-branches {PRUNE_BRANCHES} \
+            --min-component-size {MIN_PATH_SIZE} 2> {log}
+        """
+
+rule backbone_metrics:
+    """Compute physical map metrics."""
+    input:
+        path=f"{OUTDIR}/{PREFIX}.backbone.path"
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.backbone.metrics.tsv"
+    shell:
+        """
+        {PHYSLR} path-metrics {input.path} > {output.tsv}
+        """
+
+rule backbone_dot:
+    """Generate DOT visualization of backbone paths."""
+    input:
+        path=f"{OUTDIR}/{PREFIX}.backbone.path"
+    output:
+        dot=f"{OUTDIR}/{PREFIX}.backbone.dot"
+    shell:
+        """
+        {PHYSLR} backbone-dot {input.path} -o {output.dot}
+        """
+
+# ─── Scaffolding Pipeline ────────────────────────────────────────────────────
+
+rule index_draft:
+    """Extract minimizers from a draft assembly."""
+    input:
+        fa=lambda wc: DRAFT_ASSEMBLIES[wc.draft]
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.{{draft}}.contigs.mxs.tsv"
+    log:
+        f"{OUTDIR}/logs/index_{{draft}}.log"
+    shell:
+        """
+        {PHYSLR} index-contigs {input.fa} -o {output.tsv} -k {K} -w {W} 2> {log}
+        """
+
+rule map_contigs:
+    """Map draft assembly contigs to the physical map."""
+    input:
+        path=f"{OUTDIR}/{PREFIX}.backbone.path",
+        target_mxs=f"{OUTDIR}/{PREFIX}.filtered.mxs.tsv",
+        query_mxs=f"{OUTDIR}/{PREFIX}.{{draft}}.contigs.mxs.tsv"
+    output:
+        bed=f"{OUTDIR}/{PREFIX}.{{draft}}.map.bed"
+    log:
+        f"{OUTDIR}/logs/map_{{draft}}.log"
+    shell:
+        """
+        {PHYSLR} map {input.path} {input.target_mxs} {input.query_mxs} \
+            -o {output.bed} -n {MIN_MAP_SCORE} 2> {log}
+        """
+
+rule bed_to_path:
+    """Convert BED mappings to scaffold paths."""
+    input:
+        bed=f"{OUTDIR}/{PREFIX}.{{draft}}.map.bed"
+    output:
+        path=f"{OUTDIR}/{PREFIX}.{{draft}}.scaffold.path"
+    log:
+        f"{OUTDIR}/logs/bed_to_path_{{draft}}.log"
+    shell:
+        """
+        {PHYSLR} bed-to-path {input.bed} -o {output.path} \
+            -n {MIN_MAP_SCORE} 2> {log}
+        """
+
+rule scaffold:
+    """Produce scaffolded FASTA."""
+    input:
+        fa=lambda wc: DRAFT_ASSEMBLIES[wc.draft],
+        path=f"{OUTDIR}/{PREFIX}.{{draft}}.scaffold.path"
+    output:
+        fa=f"{OUTDIR}/{PREFIX}.{{draft}}.scaffolds.fa"
+    log:
+        f"{OUTDIR}/logs/scaffold_{{draft}}.log"
+    shell:
+        """
+        {PHYSLR} path-to-fasta {input.fa} {input.path} \
+            -o {output.fa} --gap-size {GAP_SIZE} 2> {log}
+        """
+
+# ─── Reporting ────────────────────────────────────────────────────────────────
+
+rule metrics_before:
+    """Compute assembly metrics before scaffolding."""
+    input:
+        fa=lambda wc: DRAFT_ASSEMBLIES[wc.draft]
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.{{draft}}.before.metrics.tsv"
+    shell:
+        """
+        {PHYSLR} metrics {input.fa} -l {wildcards.draft}_before \
+            {genome_size_flag()} > {output.tsv}
+        """
+
+rule metrics_after:
+    """Compute assembly metrics after scaffolding."""
+    input:
+        fa=f"{OUTDIR}/{PREFIX}.{{draft}}.scaffolds.fa"
+    output:
+        tsv=f"{OUTDIR}/{PREFIX}.{{draft}}.after.metrics.tsv"
+    shell:
+        """
+        {PHYSLR} metrics {input.fa} -l {wildcards.draft}_after \
+            {genome_size_flag()} > {output.tsv}
+        """
+
+rule report:
+    """Generate JSON report combining all metrics."""
+    input:
+        before=f"{OUTDIR}/{PREFIX}.{{draft}}.before.metrics.tsv",
+        after=f"{OUTDIR}/{PREFIX}.{{draft}}.after.metrics.tsv",
+        pm=f"{OUTDIR}/{PREFIX}.backbone.metrics.tsv"
+    output:
+        json=f"{OUTDIR}/{PREFIX}.{{draft}}.report.json"
+    run:
+        import json
+        def parse_tsv(path):
+            d = {}
+            with open(path) as f:
+                for line in f:
+                    parts = line.strip().split("\t")
+                    if len(parts) == 2:
+                        d[parts[0]] = parts[1]
+            return d
+
+        report = {
+            "physical_map": parse_tsv(input.pm),
+            "assembly_before": parse_tsv(input.before),
+            "assembly_after": parse_tsv(input.after),
+        }
+        with open(output.json, "w") as f:
+            json.dump(report, f, indent=2)
+
+# ─── Quast (optional, requires quast installed) ──────────────────────────────
+
+if REFERENCE:
+    rule quast_before:
+        """Run Quast on draft assembly."""
+        input:
+            fa=lambda wc: DRAFT_ASSEMBLIES[wc.draft],
+            ref=REFERENCE
+        output:
+            tsv=f"{OUTDIR}/quast/{{draft}}_before/report.tsv"
+        params:
+            outdir=f"{OUTDIR}/quast/{{draft}}_before"
+        threads: 4
+        shell:
+            """
+            quast {input.fa} -r {input.ref} -o {params.outdir} \
+                -t {threads} --min-contig 500 2>&1 || true
+            """
+
+    rule quast_after:
+        """Run Quast on scaffolded assembly."""
+        input:
+            fa=f"{OUTDIR}/{PREFIX}.{{draft}}.scaffolds.fa",
+            ref=REFERENCE
+        output:
+            tsv=f"{OUTDIR}/quast/{{draft}}_after/report.tsv"
+        params:
+            outdir=f"{OUTDIR}/quast/{{draft}}_after"
+        threads: 4
+        shell:
+            """
+            quast {input.fa} -r {input.ref} -o {params.outdir} \
+                -t {threads} --min-contig 500 2>&1 || true
+            """

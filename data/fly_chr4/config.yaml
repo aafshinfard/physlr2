@@ -1,0 +1,25 @@
+# Fly chr4 test configuration
+physlr_bin: "../../target/release/physlr"
+outdir: "output"
+prefix: "fly_chr4"
+
+linked_reads: "linked_reads.fq"
+reference: "reference.fa"
+genome_size: 1348131
+
+draft_assemblies:
+  draft_20k: "draft_20k.fa"
+  draft_50k: "draft_50k.fa"
+
+# Parameters tuned for simulated chr4 data
+k: 32
+w: 32
+min_bx_count: 2
+max_bx_count: 5000
+min_overlap: 10
+edge_percentile: 90.0
+prune_branches: 3
+prune_bridges: 0
+min_path_size: 3
+min_map_score: 10
+gap_size: 100

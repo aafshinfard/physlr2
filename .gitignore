@@ -1,0 +1,34 @@
+# Rust
+/target/
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (large)
+data/*.fq.gz
+data/*.fa
+data/*.fa.fai
+data/*.bam
+data/*.paf
+data/*.paf.gz
+data/*.tsv.gz
+data/*.bf
+
+# Snakemake
+.snakemake/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Reports
+*.html

@@ -1,0 +1,9 @@
+/home/vscode/.local/bin/physlr:4: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+  __import__('pkg_resources').require('physlr==1.0.4')
+0 Reading /workspaces/physlr-next/data/fly_chr4/output_original/reads.molecules.tsv
+ 0.0% 00:00 ETA ?           100.0% 00:00 ETA 00:00 ██████████
+0 Read /workspaces/physlr-next/data/fly_chr4/output_original/reads.molecules.tsv
+0 Determined the maximum spanning tree.
+0 Pruned 537 vertices of 547 (98.17%) in 2 iterations.
+0 Pruned 0 junctions in the backbone
+0 Assembled 10 molecules in 1 paths.

@@ -1,0 +1,10 @@
+/home/vscode/.local/bin/physlr:4: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+  __import__('pkg_resources').require('physlr==1.0.4')
+0 Reading /workspaces/physlr-next/data/fly_chr4/output_original/draft_20k.map.bed
+ 0.0% 00:00 ETA ?           100.0% 00:00 ETA 00:00 ██████████
+0 Read /workspaces/physlr-next/data/fly_chr4/output_original/draft_20k.map.bed
+ 0.0% 00:00 ETA ?           100.0% 00:00 ETA 00:00 ██████████
+ 0.0% 00:00 ETA ?           100.0% 00:00 ETA 00:00 ██████████
+0 Ordered and oriented queries.
+ 0.0% 00:00 ETA ?           100.0% 00:00 ETA 00:00 ██████████
+0 Wrote 63 contigs in 1 scaffolds.
