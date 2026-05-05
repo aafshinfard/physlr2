@@ -419,57 +419,47 @@ pub fn prune_branches(tree: &mut OverlapGraph, min_branch_size: usize) -> usize 
         return 0;
     }
 
+    let n_orig = tree.node_count();
     let mut total_pruned = 0;
+
     loop {
-        // Find leaves
-        let leaves: Vec<NodeIndex> = tree
-            .node_indices()
-            .filter(|&n| tree.neighbors(n).count() == 1)
-            .collect();
+        // Compute branch lengths for all components using message passing.
+        // branch_lengths[(u, v)] = longest path from edge (u,v) to a leaf on v's side.
+        let components = connected_components(tree);
+        let mut branch_lengths: FxHashMap<(NodeIndex, NodeIndex), usize> = FxHashMap::default();
+        for comp in &components {
+            let bl = measure_branch_lengths(tree, comp);
+            branch_lengths.extend(bl);
+        }
 
-        let mut pruned_this_round = 0;
-
-        for leaf in leaves {
-            // Walk from leaf toward the interior, collecting the branch
-            let mut branch = Vec::new();
-            let mut current = leaf;
-            loop {
-                let degree = tree.neighbors(current).count();
-                if degree == 0 {
-                    // Already removed
-                    branch.push(current);
-                    break;
-                }
-                if degree >= 3 {
-                    // Reached a junction — don't include it in the branch
-                    break;
-                }
-                branch.push(current);
-                if degree == 1 && current != leaf {
-                    // Reached another leaf (the other end of a path component)
-                    break;
-                }
-                // degree == 2 or (degree == 1 and current == leaf): continue walking
-                let neighbors: Vec<NodeIndex> = tree.neighbors(current).collect();
-                let next = if neighbors.len() == 1 {
-                    neighbors[0]
-                } else {
-                    // degree 2: pick the neighbor not already in branch
-                    *neighbors
-                        .iter()
-                        .find(|&&n| !branch.contains(&n))
-                        .unwrap_or(&neighbors[0])
-                };
-                if branch.contains(&next) {
-                    break;
-                }
-                current = next;
+        // Find edges to remove: (u, v) where degree(u) >= 3 and branch_length < threshold.
+        // This matches the original: edges from junctions into short subtrees.
+        let mut edges_to_remove: Vec<(NodeIndex, NodeIndex)> = Vec::new();
+        for (&(u, v), &length) in &branch_lengths {
+            if tree.neighbors(u).count() >= 3 && length < min_branch_size {
+                edges_to_remove.push((u, v));
             }
+        }
 
-            // Check if this branch is short enough to prune
-            let junction_degree = tree.neighbors(current).count();
-            if branch.len() < min_branch_size && junction_degree >= 3 {
-                for &node in &branch {
+        if edges_to_remove.is_empty() {
+            break;
+        }
+
+        // Remove the edges, then remove the disconnected subtrees.
+        // First, remove edges from the tree.
+        for &(u, v) in &edges_to_remove {
+            if let Some(edge) = tree.find_edge(u, v) {
+                tree.remove_edge(edge);
+            }
+        }
+
+        // Now remove the disconnected subtrees (the v side of each removed edge).
+        let mut pruned_this_round = 0;
+        for &(_u, v) in &edges_to_remove {
+            if tree.node_weight(v).is_some() {
+                // Collect all nodes reachable from v (the disconnected subtree)
+                let subtree = bfs_collect(tree, v);
+                for &node in &subtree {
                     tree.remove_node(node);
                     pruned_this_round += 1;
                 }
@@ -480,6 +470,15 @@ pub fn prune_branches(tree: &mut OverlapGraph, min_branch_size: usize) -> usize 
         if pruned_this_round == 0 {
             break;
         }
+    }
+
+    if total_pruned > 0 {
+        log::info!(
+            "Pruned {} vertices of {} ({:.2}%)",
+            total_pruned,
+            n_orig,
+            100.0 * total_pruned as f64 / n_orig as f64
+        );
     }
     total_pruned
 }
