@@ -584,3 +584,497 @@ fn split_at_junctions(
 
     paths
 }
+/// Scaffold backbone paths using split-minimizer bridge evidence.
+///
+/// Finds non-backbone molecules whose split minimizers overlap with
+/// endpoint molecules from two different backbone paths. These bridge
+/// molecules indicate that the two paths are adjacent on the same
+/// chromosome and can be joined into a scaffold.
+///
+/// The split-minimizer signal is much more specific than barcode-level
+/// minimizers because each molecule covers ~50kb with a focused set of
+/// minimizers, reducing false positives from genome-wide sharing.
+
+/// Configuration for backbone scaffolding.
+#[derive(Debug, Clone)]
+pub struct ScaffoldBackboneConfig {
+    /// Number of molecules from each path end to use as endpoints.
+    pub endpoint_depth: usize,
+    /// Minimum shared minimizers between a bridge molecule and an endpoint.
+    pub min_shared_mx: usize,
+    /// Minimum bridge molecules to consider a scaffolding link.
+    pub min_bridges: usize,
+    /// Maximum number of different paths a bridge molecule can connect to
+    /// (specificity filter — higher values allow more noise).
+    pub max_path_connections: usize,
+    /// Minimum path length (molecules) to include in scaffolding.
+    pub min_path_size: usize,
+}
+
+impl Default for ScaffoldBackboneConfig {
+    fn default() -> Self {
+        Self {
+            endpoint_depth: 10,
+            min_shared_mx: 3,
+            min_bridges: 2,
+            max_path_connections: 4,
+            min_path_size: 50,
+        }
+    }
+}
+
+/// An endpoint of a backbone path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Endpoint {
+    path_idx: usize,
+    is_end: bool, // false = start, true = end
+}
+
+/// A scaffolding link between two path endpoints.
+#[derive(Debug)]
+struct ScaffoldLink {
+    ep1: Endpoint,
+    ep2: Endpoint,
+    bridge_count: usize,
+}
+
+/// Scaffold backbone paths using split-minimizer bridge molecules.
+///
+/// Returns a new set of paths where some have been merged based on
+/// bridge evidence.
+pub fn scaffold_backbones(
+    paths: &[Vec<String>],
+    split_mxs: &FxHashMap<String, FxHashSet<u64>>,
+    config: &ScaffoldBackboneConfig,
+) -> Vec<Vec<String>> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+
+    // Build backbone molecule set and path membership
+    let mut mol_to_path: FxHashMap<&str, usize> = FxHashMap::default();
+    for (i, path) in paths.iter().enumerate() {
+        for mol in path {
+            mol_to_path.insert(mol.as_str(), i);
+        }
+    }
+    let backbone_mols: FxHashSet<&str> = mol_to_path.keys().copied().collect();
+
+    // Identify endpoint molecules
+    let mut endpoint_info: FxHashMap<&str, Endpoint> = FxHashMap::default();
+    for (i, path) in paths.iter().enumerate() {
+        let depth = config.endpoint_depth.min(path.len());
+        for mol in &path[..depth] {
+            endpoint_info.insert(mol.as_str(), Endpoint { path_idx: i, is_end: false });
+        }
+        let start = if path.len() > depth { path.len() - depth } else { 0 };
+        for mol in &path[start..] {
+            endpoint_info.insert(mol.as_str(), Endpoint { path_idx: i, is_end: true });
+        }
+    }
+
+    log::info!(
+        "Scaffold: {} paths, {} endpoint molecules (depth={})",
+        paths.len(),
+        endpoint_info.len(),
+        config.endpoint_depth
+    );
+
+    // Build minimizer index from endpoint molecules
+    // mx -> list of endpoints that contain this minimizer
+    let mut mx_to_endpoints: FxHashMap<u64, Vec<Endpoint>> = FxHashMap::default();
+    for (&mol_name, &endpoint) in &endpoint_info {
+        if let Some(mxs) = split_mxs.get(mol_name) {
+            for &mx in mxs {
+                mx_to_endpoints.entry(mx).or_default().push(endpoint);
+            }
+        }
+    }
+
+    log::info!(
+        "Indexed {} minimizers from endpoint molecules",
+        mx_to_endpoints.len()
+    );
+
+    // Scan all non-backbone molecules for bridge evidence
+    let mut bridge_evidence: FxHashMap<(Endpoint, Endpoint), FxHashSet<String>> =
+        FxHashMap::default();
+
+    let mut scanned = 0usize;
+    for (mol_name, mxs) in split_mxs {
+        // Skip backbone molecules
+        if backbone_mols.contains(mol_name.as_str()) {
+            continue;
+        }
+
+        // Count shared minimizers with each endpoint
+        let mut endpoint_hits: FxHashMap<Endpoint, usize> = FxHashMap::default();
+        for &mx in mxs {
+            if let Some(endpoints) = mx_to_endpoints.get(&mx) {
+                for &ep in endpoints {
+                    *endpoint_hits.entry(ep).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Filter: only keep endpoints with sufficient shared minimizers
+        let strong_hits: Vec<Endpoint> = endpoint_hits
+            .iter()
+            .filter(|(_, &count)| count >= config.min_shared_mx)
+            .map(|(&ep, _)| ep)
+            .collect();
+
+        // Check specificity: how many different paths does this molecule connect to?
+        let connected_paths: FxHashSet<usize> =
+            strong_hits.iter().map(|ep| ep.path_idx).collect();
+
+        if connected_paths.len() < 2 || connected_paths.len() > config.max_path_connections {
+            scanned += 1;
+            continue;
+        }
+
+        // Record bridge evidence for each pair of endpoints from different paths
+        for i in 0..strong_hits.len() {
+            for j in (i + 1)..strong_hits.len() {
+                let ep1 = strong_hits[i];
+                let ep2 = strong_hits[j];
+                if ep1.path_idx == ep2.path_idx {
+                    continue;
+                }
+                let key = if ep1 < ep2 { (ep1, ep2) } else { (ep2, ep1) };
+                bridge_evidence
+                    .entry(key)
+                    .or_default()
+                    .insert(mol_name.clone());
+            }
+        }
+
+        scanned += 1;
+    }
+
+    log::info!(
+        "Scanned {} non-backbone molecules, found {} endpoint pairs with bridges",
+        scanned,
+        bridge_evidence.len()
+    );
+
+    // Collect scaffolding links above threshold, filtered by path size
+    let mut links: Vec<ScaffoldLink> = bridge_evidence
+        .into_iter()
+        .filter_map(|((ep1, ep2), bridges)| {
+            let count = bridges.len();
+            if count < config.min_bridges {
+                return None;
+            }
+            // Both paths must be large enough
+            if paths[ep1.path_idx].len() < config.min_path_size
+                || paths[ep2.path_idx].len() < config.min_path_size
+            {
+                return None;
+            }
+            Some(ScaffoldLink {
+                ep1,
+                ep2,
+                bridge_count: count,
+            })
+        })
+        .collect();
+
+    // Sort by bridge count descending (strongest evidence first)
+    links.sort_by(|a, b| b.bridge_count.cmp(&a.bridge_count));
+
+    log::info!(
+        "Found {} scaffolding links (min_bridges={}, min_path_size={})",
+        links.len(),
+        config.min_bridges,
+        config.min_path_size
+    );
+
+    for link in &links {
+        log::info!(
+            "  Link: path {} ({}) <-> path {} ({}) — {} bridge molecules",
+            link.ep1.path_idx,
+            if link.ep1.is_end { "end" } else { "start" },
+            link.ep2.path_idx,
+            if link.ep2.is_end { "end" } else { "start" },
+            link.bridge_count
+        );
+    }
+
+    if links.is_empty() {
+        return paths.to_vec();
+    }
+
+    // Greedy scaffolding using union-find
+    // Each endpoint can participate in at most one link
+    let n = paths.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut used_endpoints: FxHashSet<Endpoint> = FxHashSet::default();
+
+    // For each path, track which other path is joined at each end
+    // join_at[path_idx] = (start_join, end_join)
+    // where each join is Option<(other_path_idx, other_is_end)>
+    let mut join_at_start: FxHashMap<usize, (usize, bool)> = FxHashMap::default();
+    let mut join_at_end: FxHashMap<usize, (usize, bool)> = FxHashMap::default();
+
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent, parent[x]);
+        }
+        parent[x]
+    }
+
+    fn union(parent: &mut [usize], x: usize, y: usize) {
+        let rx = find(parent, x);
+        let ry = find(parent, y);
+        if rx != ry {
+            parent[rx] = ry;
+        }
+    }
+
+    let mut accepted = 0;
+    for link in &links {
+        // Skip if either endpoint is already used
+        if used_endpoints.contains(&link.ep1) || used_endpoints.contains(&link.ep2) {
+            continue;
+        }
+
+        // Skip if paths are already in the same scaffold (would create a cycle)
+        if find(&mut parent, link.ep1.path_idx) == find(&mut parent, link.ep2.path_idx) {
+            continue;
+        }
+
+        // Accept this link
+        used_endpoints.insert(link.ep1);
+        used_endpoints.insert(link.ep2);
+        union(&mut parent, link.ep1.path_idx, link.ep2.path_idx);
+
+        if link.ep1.is_end {
+            join_at_end.insert(link.ep1.path_idx, (link.ep2.path_idx, link.ep2.is_end));
+        } else {
+            join_at_start.insert(link.ep1.path_idx, (link.ep2.path_idx, link.ep2.is_end));
+        }
+
+        if link.ep2.is_end {
+            join_at_end.insert(link.ep2.path_idx, (link.ep1.path_idx, link.ep1.is_end));
+        } else {
+            join_at_start.insert(link.ep2.path_idx, (link.ep1.path_idx, link.ep1.is_end));
+        }
+
+        accepted += 1;
+    }
+
+    log::info!("Accepted {} scaffolding links", accepted);
+
+    if accepted == 0 {
+        return paths.to_vec();
+    }
+
+    // Build scaffold chains by following the join links
+    let mut used_in_scaffold: FxHashSet<usize> = FxHashSet::default();
+    let mut scaffolded_paths: Vec<Vec<String>> = Vec::new();
+
+    for start_path in 0..n {
+        if used_in_scaffold.contains(&start_path) {
+            continue;
+        }
+        if paths[start_path].len() < config.min_path_size {
+            continue;
+        }
+
+        // Check if this path has any joins
+        let has_start_join = join_at_start.contains_key(&start_path);
+        let has_end_join = join_at_end.contains_key(&start_path);
+
+        if !has_start_join && !has_end_join {
+            continue; // No joins, will be added as-is later
+        }
+
+        // Find the leftmost path in this chain by walking backwards
+        // through start-joins, with cycle detection
+        let mut chain_start = start_path;
+        let mut visited_backward: FxHashSet<usize> = FxHashSet::default();
+        visited_backward.insert(chain_start);
+
+        loop {
+            // If chain_start has a start-join, the previous path connects here
+            if let Some(&(prev_path, _prev_is_end)) = join_at_start.get(&chain_start) {
+                if !visited_backward.contains(&prev_path) && !used_in_scaffold.contains(&prev_path) {
+                    visited_backward.insert(prev_path);
+                    chain_start = prev_path;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        // Walk forward from chain_start, building the merged path
+        let mut merged = Vec::new();
+        let mut current = chain_start;
+        let mut entering_from_end = false;
+
+        // Determine initial orientation: if we reached chain_start via its end-join,
+        // we need to check how we got here
+        // Actually, chain_start is the leftmost — we always start from its natural beginning
+        // unless its start has no join (which is why it's the chain start)
+
+        let mut chain_visited: FxHashSet<usize> = FxHashSet::default();
+
+        loop {
+            if chain_visited.contains(&current) || used_in_scaffold.contains(&current) {
+                break;
+            }
+            chain_visited.insert(current);
+            used_in_scaffold.insert(current);
+
+            let path_mols = &paths[current];
+            if entering_from_end {
+                // We entered from the end, so reverse the path
+                for mol in path_mols.iter().rev() {
+                    merged.push(mol.clone());
+                }
+                // Exit from the start — check start join
+                if let Some(&(next_path, next_is_end)) = join_at_start.get(&current) {
+                    if !chain_visited.contains(&next_path) && !used_in_scaffold.contains(&next_path) {
+                        entering_from_end = next_is_end;
+                        current = next_path;
+                        continue;
+                    }
+                }
+            } else {
+                // Normal direction
+                merged.extend(path_mols.iter().cloned());
+                // Exit from the end — check end join
+                if let Some(&(next_path, next_is_end)) = join_at_end.get(&current) {
+                    if !chain_visited.contains(&next_path) && !used_in_scaffold.contains(&next_path) {
+                        entering_from_end = next_is_end;
+                        current = next_path;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+
+        if !merged.is_empty() {
+            scaffolded_paths.push(merged);
+        }
+    }
+    // Add unscaffolded paths
+    for (i, path) in paths.iter().enumerate() {
+        if !used_in_scaffold.contains(&i) {
+            scaffolded_paths.push(path.clone());
+        }
+    }
+
+    // Sort by length descending
+    scaffolded_paths.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    let total_mols: usize = scaffolded_paths.iter().map(|p| p.len()).sum();
+    log::info!(
+        "After scaffolding: {} paths ({} molecules)",
+        scaffolded_paths.len(),
+        total_mols
+    );
+
+    scaffolded_paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_mxs(data: &[(&str, &[u64])]) -> FxHashMap<String, FxHashSet<u64>> {
+        data.iter()
+            .map(|(name, mxs)| {
+                (
+                    name.to_string(),
+                    mxs.iter().copied().collect::<FxHashSet<u64>>(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_scaffold_empty() {
+        let paths: Vec<Vec<String>> = Vec::new();
+        let mxs = FxHashMap::default();
+        let config = ScaffoldBackboneConfig::default();
+        let result = scaffold_backbones(&paths, &mxs, &config);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_scaffold_no_bridges() {
+        let paths = vec![
+            (0..100).map(|i| format!("a_{}", i)).collect::<Vec<_>>(),
+            (0..100).map(|i| format!("b_{}", i)).collect::<Vec<_>>(),
+        ];
+        let mxs = FxHashMap::default();
+        let config = ScaffoldBackboneConfig::default();
+        let result = scaffold_backbones(&paths, &mxs, &config);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_scaffold_with_bridge() {
+        // Two paths of 60 molecules each
+        let path_a: Vec<String> = (0..60).map(|i| format!("a_{}", i)).collect();
+        let path_b: Vec<String> = (0..60).map(|i| format!("b_{}", i)).collect();
+        let paths = vec![path_a, path_b];
+
+        // Endpoint molecules: a_50..a_59 (end of path A), b_0..b_9 (start of path B)
+        // Bridge molecules: bridge_0, bridge_1 share minimizers with both endpoints
+        let mut mxs = FxHashMap::default();
+
+        // Give endpoint molecules some minimizers
+        for i in 50..60 {
+            let mut s = FxHashSet::default();
+            s.insert(1000 + i as u64);
+            s.insert(2000 + i as u64);
+            s.insert(9000); // shared with bridge
+            s.insert(9001);
+            s.insert(9002);
+            mxs.insert(format!("a_{}", i), s);
+        }
+        for i in 0..10 {
+            let mut s = FxHashSet::default();
+            s.insert(3000 + i as u64);
+            s.insert(4000 + i as u64);
+            s.insert(8000); // shared with bridge
+            s.insert(8001);
+            s.insert(8002);
+            mxs.insert(format!("b_{}", i), s);
+        }
+
+        // Bridge molecules share minimizers with both endpoints
+        for b in 0..3 {
+            let mut s = FxHashSet::default();
+            s.insert(9000); // shared with path A endpoint
+            s.insert(9001);
+            s.insert(9002);
+            s.insert(8000); // shared with path B endpoint
+            s.insert(8001);
+            s.insert(8002);
+            mxs.insert(format!("bridge_{}", b), s);
+        }
+
+        let config = ScaffoldBackboneConfig {
+            endpoint_depth: 10,
+            min_shared_mx: 3,
+            min_bridges: 2,
+            max_path_connections: 4,
+            min_path_size: 50,
+        };
+
+        let result = scaffold_backbones(&paths, &mxs, &config);
+        // Should merge into 1 path
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 120);
+        // First 60 should be path A, next 60 should be path B
+        assert_eq!(result[0][0], "a_0");
+        assert_eq!(result[0][59], "a_59");
+        assert_eq!(result[0][60], "b_0");
+        assert_eq!(result[0][119], "b_59");
+    }
+}
