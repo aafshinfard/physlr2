@@ -225,6 +225,34 @@ enum Commands {
         min_component_size: usize,
     },
 
+    /// Scaffold backbone paths using split-minimizer bridge evidence.
+    /// Finds non-backbone molecules that bridge path endpoints to merge
+    /// adjacent paths into longer scaffolds.
+    ScaffoldBackbone {
+        /// Input backbone path file
+        path_file: String,
+        /// Split minimizer TSV (molecule-level minimizers)
+        split_mxs: String,
+        /// Output scaffolded path file
+        #[arg(short, long, default_value = "-")]
+        output: String,
+        /// Number of molecules from each path end to use as endpoints
+        #[arg(long, default_value_t = 10)]
+        endpoint_depth: usize,
+        /// Minimum shared minimizers for a bridge molecule
+        #[arg(long, default_value_t = 3)]
+        min_shared_mx: usize,
+        /// Minimum bridge molecules to accept a scaffolding link
+        #[arg(long, default_value_t = 2)]
+        min_bridges: usize,
+        /// Maximum paths a bridge molecule can connect (specificity filter)
+        #[arg(long, default_value_t = 4)]
+        max_connections: usize,
+        /// Minimum path length to include in scaffolding
+        #[arg(long, default_value_t = 50)]
+        min_path_size: usize,
+    },
+
     /// Map sequences to the physical map
     Map {
         /// Backbone path file
@@ -727,6 +755,38 @@ fn main() -> Result<()> {
             let mut writer = physlr::io::open_writer(&output)?;
             physlr::io::write_paths(&paths, &mut *writer)?;
             timer.log("Done extracting backbones");
+        }
+
+        Commands::ScaffoldBackbone {
+            path_file,
+            split_mxs,
+            output,
+            endpoint_depth,
+            min_shared_mx,
+            min_bridges,
+            max_connections,
+            min_path_size,
+        } => {
+            timer.log("Loading backbone paths and split minimizers...");
+            let paths = physlr::io::read_paths(&path_file)?;
+            timer.log(&format!("Read {} backbone paths", paths.len()));
+
+            let mxs = physlr::io::read_minimizers(&split_mxs)?;
+            timer.log(&format!("Read split minimizers for {} molecules", mxs.len()));
+
+            let config = physlr::backbone::ScaffoldBackboneConfig {
+                endpoint_depth,
+                min_shared_mx,
+                min_bridges,
+                max_path_connections: max_connections,
+                min_path_size,
+            };
+
+            let scaffolded = physlr::backbone::scaffold_backbones(&paths, &mxs, &config);
+
+            let mut writer = physlr::io::open_writer(&output)?;
+            physlr::io::write_paths(&scaffolded, &mut *writer)?;
+            timer.log("Done scaffolding backbones");
         }
 
         Commands::Map {
