@@ -225,15 +225,15 @@ enum Commands {
         min_component_size: usize,
     },
 
-    /// Scaffold backbone paths using split-minimizer bridge evidence.
-    /// Finds non-backbone molecules that bridge path endpoints to merge
-    /// adjacent paths into longer scaffolds.
-    ScaffoldBackbone {
+    /// Merge adjacent backbone paths using split-minimizer bridge evidence.
+    /// Optional post-processing step that finds non-backbone molecules
+    /// bridging path endpoints to merge adjacent paths.
+    MergePaths {
         /// Input backbone path file
         path_file: String,
         /// Split minimizer TSV (molecule-level minimizers)
         split_mxs: String,
-        /// Output scaffolded path file
+        /// Output merged path file
         #[arg(short, long, default_value = "-")]
         output: String,
         /// Number of molecules from each path end to use as endpoints
@@ -242,15 +242,21 @@ enum Commands {
         /// Minimum shared minimizers for a bridge molecule
         #[arg(long, default_value_t = 3)]
         min_shared_mx: usize,
-        /// Minimum bridge molecules to accept a scaffolding link
+        /// Minimum bridge molecules to accept a link
         #[arg(long, default_value_t = 2)]
         min_bridges: usize,
         /// Maximum paths a bridge molecule can connect (specificity filter)
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = 2)]
         max_connections: usize,
-        /// Minimum path length to include in scaffolding
+        /// Minimum path length to include in merging
         #[arg(long, default_value_t = 50)]
         min_path_size: usize,
+        /// Maximum candidate links per endpoint (promiscuous endpoint filter)
+        #[arg(long, default_value_t = 3)]
+        max_links_per_endpoint: usize,
+        /// Minimum bridge density (bridges / min_path_len). Set to 0 to disable.
+        #[arg(long, default_value_t = 0.01)]
+        min_bridge_density: f64,
     },
 
     /// Map sequences to the physical map
@@ -757,7 +763,7 @@ fn main() -> Result<()> {
             timer.log("Done extracting backbones");
         }
 
-        Commands::ScaffoldBackbone {
+        Commands::MergePaths {
             path_file,
             split_mxs,
             output,
@@ -766,6 +772,8 @@ fn main() -> Result<()> {
             min_bridges,
             max_connections,
             min_path_size,
+            max_links_per_endpoint,
+            min_bridge_density,
         } => {
             timer.log("Loading backbone paths and split minimizers...");
             let paths = physlr::io::read_paths(&path_file)?;
@@ -774,19 +782,21 @@ fn main() -> Result<()> {
             let mxs = physlr::io::read_minimizers(&split_mxs)?;
             timer.log(&format!("Read split minimizers for {} molecules", mxs.len()));
 
-            let config = physlr::backbone::ScaffoldBackboneConfig {
+            let config = physlr::backbone::MergePathsConfig {
                 endpoint_depth,
                 min_shared_mx,
                 min_bridges,
                 max_path_connections: max_connections,
                 min_path_size,
+                max_links_per_endpoint,
+                min_bridge_density,
             };
 
-            let scaffolded = physlr::backbone::scaffold_backbones(&paths, &mxs, &config);
+            let merged = physlr::backbone::merge_paths(&paths, &mxs, &config);
 
             let mut writer = physlr::io::open_writer(&output)?;
-            physlr::io::write_paths(&scaffolded, &mut *writer)?;
-            timer.log("Done scaffolding backbones");
+            physlr::io::write_paths(&merged, &mut *writer)?;
+            timer.log("Done merging paths");
         }
 
         Commands::Map {

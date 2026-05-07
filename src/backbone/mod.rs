@@ -584,41 +584,48 @@ fn split_at_junctions(
 
     paths
 }
-/// Scaffold backbone paths using split-minimizer bridge evidence.
+/// Merge adjacent backbone paths using split-minimizer bridge evidence.
 ///
 /// Finds non-backbone molecules whose split minimizers overlap with
 /// endpoint molecules from two different backbone paths. These bridge
 /// molecules indicate that the two paths are adjacent on the same
-/// chromosome and can be joined into a scaffold.
+/// chromosome and can be merged.
 ///
-/// The split-minimizer signal is much more specific than barcode-level
-/// minimizers because each molecule covers ~50kb with a focused set of
-/// minimizers, reducing false positives from genome-wide sharing.
+/// This is an optional post-processing step for the physical map.
 
-/// Configuration for backbone scaffolding.
+/// Configuration for path merging.
 #[derive(Debug, Clone)]
-pub struct ScaffoldBackboneConfig {
+pub struct MergePathsConfig {
     /// Number of molecules from each path end to use as endpoints.
     pub endpoint_depth: usize,
     /// Minimum shared minimizers between a bridge molecule and an endpoint.
     pub min_shared_mx: usize,
-    /// Minimum bridge molecules to consider a scaffolding link.
+    /// Minimum bridge molecules to consider a link.
     pub min_bridges: usize,
     /// Maximum number of different paths a bridge molecule can connect to
     /// (specificity filter — higher values allow more noise).
     pub max_path_connections: usize,
-    /// Minimum path length (molecules) to include in scaffolding.
+    /// Minimum path length (molecules) to include in merging.
     pub min_path_size: usize,
+    /// Maximum candidate links per endpoint. Endpoints appearing in more
+    /// links than this are likely non-specific and are excluded.
+    pub max_links_per_endpoint: usize,
+    /// Minimum bridge density: bridge_count / min(len_A, len_B).
+    /// Filters out links with high absolute bridge count but low relative
+    /// evidence. Set to 0.0 to disable.
+    pub min_bridge_density: f64,
 }
 
-impl Default for ScaffoldBackboneConfig {
+impl Default for MergePathsConfig {
     fn default() -> Self {
         Self {
             endpoint_depth: 10,
             min_shared_mx: 3,
             min_bridges: 2,
-            max_path_connections: 4,
+            max_path_connections: 2,
             min_path_size: 50,
+            max_links_per_endpoint: 3,
+            min_bridge_density: 0.01,
         }
     }
 }
@@ -630,22 +637,22 @@ struct Endpoint {
     is_end: bool, // false = start, true = end
 }
 
-/// A scaffolding link between two path endpoints.
+/// A merge link between two path endpoints.
 #[derive(Debug)]
-struct ScaffoldLink {
+struct MergeLink {
     ep1: Endpoint,
     ep2: Endpoint,
     bridge_count: usize,
 }
 
-/// Scaffold backbone paths using split-minimizer bridge molecules.
+/// Merge adjacent backbone paths using split-minimizer bridge molecules.
 ///
 /// Returns a new set of paths where some have been merged based on
-/// bridge evidence.
-pub fn scaffold_backbones(
+/// bridge evidence. This is an optional post-processing step.
+pub fn merge_paths(
     paths: &[Vec<String>],
     split_mxs: &FxHashMap<String, FxHashSet<u64>>,
-    config: &ScaffoldBackboneConfig,
+    config: &MergePathsConfig,
 ) -> Vec<Vec<String>> {
     if paths.is_empty() {
         return Vec::new();
@@ -758,21 +765,29 @@ pub fn scaffold_backbones(
         bridge_evidence.len()
     );
 
-    // Collect scaffolding links above threshold, filtered by path size
-    let mut links: Vec<ScaffoldLink> = bridge_evidence
+    // Collect merge links above threshold, filtered by path size and bridge density
+    let mut links: Vec<MergeLink> = bridge_evidence
         .into_iter()
         .filter_map(|((ep1, ep2), bridges)| {
             let count = bridges.len();
             if count < config.min_bridges {
                 return None;
             }
+            let len_a = paths[ep1.path_idx].len();
+            let len_b = paths[ep2.path_idx].len();
             // Both paths must be large enough
-            if paths[ep1.path_idx].len() < config.min_path_size
-                || paths[ep2.path_idx].len() < config.min_path_size
-            {
+            if len_a < config.min_path_size || len_b < config.min_path_size {
                 return None;
             }
-            Some(ScaffoldLink {
+            // Bridge density filter: bridges / min(len_A, len_B)
+            if config.min_bridge_density > 0.0 {
+                let min_len = len_a.min(len_b) as f64;
+                let density = count as f64 / min_len;
+                if density < config.min_bridge_density {
+                    return None;
+                }
+            }
+            Some(MergeLink {
                 ep1,
                 ep2,
                 bridge_count: count,
@@ -784,11 +799,36 @@ pub fn scaffold_backbones(
     links.sort_by(|a, b| b.bridge_count.cmp(&a.bridge_count));
 
     log::info!(
-        "Found {} scaffolding links (min_bridges={}, min_path_size={})",
+        "Found {} merge links (min_bridges={}, min_path_size={}, min_density={:.3})",
         links.len(),
         config.min_bridges,
-        config.min_path_size
+        config.min_path_size,
+        config.min_bridge_density
     );
+
+    // Filter out promiscuous endpoints that appear in too many links.
+    // These are likely non-specific (repetitive minimizers).
+    let mut endpoint_link_count: FxHashMap<Endpoint, usize> = FxHashMap::default();
+    for link in &links {
+        *endpoint_link_count.entry(link.ep1).or_insert(0) += 1;
+        *endpoint_link_count.entry(link.ep2).or_insert(0) += 1;
+    }
+
+    let before_filter = links.len();
+    links.retain(|link| {
+        let c1 = endpoint_link_count.get(&link.ep1).copied().unwrap_or(0);
+        let c2 = endpoint_link_count.get(&link.ep2).copied().unwrap_or(0);
+        c1 <= config.max_links_per_endpoint && c2 <= config.max_links_per_endpoint
+    });
+
+    if links.len() < before_filter {
+        log::info!(
+            "Filtered {} links with promiscuous endpoints (max_links_per_endpoint={}), {} remaining",
+            before_filter - links.len(),
+            config.max_links_per_endpoint,
+            links.len()
+        );
+    }
 
     for link in &links {
         log::info!(
@@ -805,7 +845,7 @@ pub fn scaffold_backbones(
         return paths.to_vec();
     }
 
-    // Greedy scaffolding using union-find
+    // Greedy path merging using union-find
     // Each endpoint can participate in at most one link
     let n = paths.len();
     let mut parent: Vec<usize> = (0..n).collect();
@@ -864,7 +904,7 @@ pub fn scaffold_backbones(
         accepted += 1;
     }
 
-    log::info!("Accepted {} scaffolding links", accepted);
+    log::info!("Accepted {} merge links", accepted);
 
     if accepted == 0 {
         return paths.to_vec();
@@ -872,7 +912,7 @@ pub fn scaffold_backbones(
 
     // Build scaffold chains by following the join links
     let mut used_in_scaffold: FxHashSet<usize> = FxHashSet::default();
-    let mut scaffolded_paths: Vec<Vec<String>> = Vec::new();
+    let mut merged_paths: Vec<Vec<String>> = Vec::new();
 
     for start_path in 0..n {
         if used_in_scaffold.contains(&start_path) {
@@ -957,27 +997,27 @@ pub fn scaffold_backbones(
         }
 
         if !merged.is_empty() {
-            scaffolded_paths.push(merged);
+            merged_paths.push(merged);
         }
     }
-    // Add unscaffolded paths
+    // Add unmerged paths
     for (i, path) in paths.iter().enumerate() {
         if !used_in_scaffold.contains(&i) {
-            scaffolded_paths.push(path.clone());
+            merged_paths.push(path.clone());
         }
     }
 
     // Sort by length descending
-    scaffolded_paths.sort_by(|a, b| b.len().cmp(&a.len()));
+    merged_paths.sort_by(|a, b| b.len().cmp(&a.len()));
 
-    let total_mols: usize = scaffolded_paths.iter().map(|p| p.len()).sum();
+    let total_mols: usize = merged_paths.iter().map(|p| p.len()).sum();
     log::info!(
-        "After scaffolding: {} paths ({} molecules)",
-        scaffolded_paths.len(),
+        "After merging: {} paths ({} molecules)",
+        merged_paths.len(),
         total_mols
     );
 
-    scaffolded_paths
+    merged_paths
 }
 
 #[cfg(test)]
@@ -999,8 +1039,8 @@ mod tests {
     fn test_scaffold_empty() {
         let paths: Vec<Vec<String>> = Vec::new();
         let mxs = FxHashMap::default();
-        let config = ScaffoldBackboneConfig::default();
-        let result = scaffold_backbones(&paths, &mxs, &config);
+        let config = MergePathsConfig::default();
+        let result = merge_paths(&paths, &mxs, &config);
         assert!(result.is_empty());
     }
 
@@ -1011,8 +1051,8 @@ mod tests {
             (0..100).map(|i| format!("b_{}", i)).collect::<Vec<_>>(),
         ];
         let mxs = FxHashMap::default();
-        let config = ScaffoldBackboneConfig::default();
-        let result = scaffold_backbones(&paths, &mxs, &config);
+        let config = MergePathsConfig::default();
+        let result = merge_paths(&paths, &mxs, &config);
         assert_eq!(result.len(), 2);
     }
 
@@ -1059,15 +1099,17 @@ mod tests {
             mxs.insert(format!("bridge_{}", b), s);
         }
 
-        let config = ScaffoldBackboneConfig {
+        let config = MergePathsConfig {
             endpoint_depth: 10,
             min_shared_mx: 3,
             min_bridges: 2,
             max_path_connections: 4,
             min_path_size: 50,
+            max_links_per_endpoint: 3,
+            min_bridge_density: 0.0,
         };
 
-        let result = scaffold_backbones(&paths, &mxs, &config);
+        let result = merge_paths(&paths, &mxs, &config);
         // Should merge into 1 path
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 120);
