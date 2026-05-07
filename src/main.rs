@@ -237,7 +237,7 @@ enum Commands {
         #[arg(short, long, default_value = "-")]
         output: String,
         /// Number of molecules from each path end to use as endpoints
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 15)]
         endpoint_depth: usize,
         /// Minimum shared minimizers for a bridge molecule
         #[arg(long, default_value_t = 3)]
@@ -252,11 +252,15 @@ enum Commands {
         #[arg(long, default_value_t = 50)]
         min_path_size: usize,
         /// Maximum candidate links per endpoint (promiscuous endpoint filter)
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 1)]
         max_links_per_endpoint: usize,
         /// Minimum bridge density (bridges / min_path_len). Set to 0 to disable.
         #[arg(long, default_value_t = 0.01)]
         min_bridge_density: f64,
+        /// Minimum endpoint molecules a bridge must connect to on each side.
+        /// Higher values require stronger neighborhood evidence per bridge.
+        #[arg(long, default_value_t = 3)]
+        min_endpoint_hits: usize,
     },
 
     /// Map sequences to the physical map
@@ -774,6 +778,7 @@ fn main() -> Result<()> {
             min_path_size,
             max_links_per_endpoint,
             min_bridge_density,
+            min_endpoint_hits,
         } => {
             timer.log("Loading backbone paths and split minimizers...");
             let paths = physlr::io::read_paths(&path_file)?;
@@ -790,6 +795,7 @@ fn main() -> Result<()> {
                 min_path_size,
                 max_links_per_endpoint,
                 min_bridge_density,
+                min_endpoint_hits,
             };
 
             let merged = physlr::backbone::merge_paths(&paths, &mxs, &config);

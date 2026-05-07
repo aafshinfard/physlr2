@@ -614,18 +614,25 @@ pub struct MergePathsConfig {
     /// Filters out links with high absolute bridge count but low relative
     /// evidence. Set to 0.0 to disable.
     pub min_bridge_density: f64,
+    /// Minimum number of endpoint molecules a bridge must connect to on
+    /// EACH side of a link. A bridge molecule must share >= min_shared_mx
+    /// minimizers with >= min_endpoint_hits distinct endpoint molecules on
+    /// both sides. Higher values require stronger neighborhood evidence.
+    /// Set to 1 for original behavior.
+    pub min_endpoint_hits: usize,
 }
 
 impl Default for MergePathsConfig {
     fn default() -> Self {
         Self {
-            endpoint_depth: 10,
+            endpoint_depth: 15,
             min_shared_mx: 3,
             min_bridges: 2,
             max_path_connections: 2,
             min_path_size: 50,
-            max_links_per_endpoint: 3,
+            max_links_per_endpoint: 1,
             min_bridge_density: 0.01,
+            min_endpoint_hits: 3,
         }
     }
 }
@@ -667,16 +674,30 @@ pub fn merge_paths(
     }
     let backbone_mols: FxHashSet<&str> = mol_to_path.keys().copied().collect();
 
-    // Identify endpoint molecules
+    // Identify endpoint molecules. Each gets a unique ID for per-molecule
+    // hit tracking. endpoint_info maps molecule name -> Endpoint (path-level).
+    // endpoint_mol_ids maps molecule name -> unique ID.
     let mut endpoint_info: FxHashMap<&str, Endpoint> = FxHashMap::default();
+    let mut endpoint_mol_ids: FxHashMap<&str, usize> = FxHashMap::default();
+    let mut endpoint_mol_to_ep: Vec<Endpoint> = Vec::new(); // mol_id -> Endpoint
+    let mut next_mol_id = 0usize;
+
     for (i, path) in paths.iter().enumerate() {
         let depth = config.endpoint_depth.min(path.len());
         for mol in &path[..depth] {
-            endpoint_info.insert(mol.as_str(), Endpoint { path_idx: i, is_end: false });
+            let ep = Endpoint { path_idx: i, is_end: false };
+            endpoint_info.insert(mol.as_str(), ep);
+            endpoint_mol_ids.insert(mol.as_str(), next_mol_id);
+            endpoint_mol_to_ep.push(ep);
+            next_mol_id += 1;
         }
         let start = if path.len() > depth { path.len() - depth } else { 0 };
         for mol in &path[start..] {
-            endpoint_info.insert(mol.as_str(), Endpoint { path_idx: i, is_end: true });
+            let ep = Endpoint { path_idx: i, is_end: true };
+            endpoint_info.insert(mol.as_str(), ep);
+            endpoint_mol_ids.insert(mol.as_str(), next_mol_id);
+            endpoint_mol_to_ep.push(ep);
+            next_mol_id += 1;
         }
     }
 
@@ -687,23 +708,27 @@ pub fn merge_paths(
         config.endpoint_depth
     );
 
-    // Build minimizer index from endpoint molecules
-    // mx -> list of endpoints that contain this minimizer
-    let mut mx_to_endpoints: FxHashMap<u64, Vec<Endpoint>> = FxHashMap::default();
-    for (&mol_name, &endpoint) in &endpoint_info {
+    // Build minimizer index: mx -> list of (endpoint_mol_id)
+    let mut mx_to_mol_ids: FxHashMap<u64, Vec<usize>> = FxHashMap::default();
+    for (&mol_name, &mol_id) in &endpoint_mol_ids {
         if let Some(mxs) = split_mxs.get(mol_name) {
             for &mx in mxs {
-                mx_to_endpoints.entry(mx).or_default().push(endpoint);
+                mx_to_mol_ids.entry(mx).or_default().push(mol_id);
             }
         }
     }
 
     log::info!(
         "Indexed {} minimizers from endpoint molecules",
-        mx_to_endpoints.len()
+        mx_to_mol_ids.len()
     );
 
-    // Scan all non-backbone molecules for bridge evidence
+    // Scan all non-backbone molecules for bridge evidence.
+    // For each bridge molecule, count shared minimizers with each individual
+    // endpoint molecule, then aggregate to path-endpoints.
+    //
+    // Bridge evidence is tracked at the path-endpoint pair level:
+    // (Endpoint, Endpoint) -> set of bridge molecule names
     let mut bridge_evidence: FxHashMap<(Endpoint, Endpoint), FxHashSet<String>> =
         FxHashMap::default();
 
@@ -714,37 +739,48 @@ pub fn merge_paths(
             continue;
         }
 
-        // Count shared minimizers with each endpoint
-        let mut endpoint_hits: FxHashMap<Endpoint, usize> = FxHashMap::default();
+        // Count shared minimizers with each individual endpoint molecule
+        let mut mol_hits: FxHashMap<usize, usize> = FxHashMap::default();
         for &mx in mxs {
-            if let Some(endpoints) = mx_to_endpoints.get(&mx) {
-                for &ep in endpoints {
-                    *endpoint_hits.entry(ep).or_insert(0) += 1;
+            if let Some(mol_ids) = mx_to_mol_ids.get(&mx) {
+                for &mid in mol_ids {
+                    *mol_hits.entry(mid).or_insert(0) += 1;
                 }
             }
         }
 
-        // Filter: only keep endpoints with sufficient shared minimizers
-        let strong_hits: Vec<Endpoint> = endpoint_hits
+        // Group by path-endpoint: count how many endpoint molecules this bridge
+        // shares >= min_shared_mx minimizers with, per path-end
+        let mut ep_mol_counts: FxHashMap<Endpoint, usize> = FxHashMap::default();
+        for (&mid, &shared_count) in &mol_hits {
+            if shared_count >= config.min_shared_mx {
+                let ep = endpoint_mol_to_ep[mid];
+                *ep_mol_counts.entry(ep).or_insert(0) += 1;
+            }
+        }
+
+        // Filter: only keep path-endpoints where the bridge connects to
+        // enough endpoint molecules (min_endpoint_hits)
+        let strong_eps: Vec<Endpoint> = ep_mol_counts
             .iter()
-            .filter(|(_, &count)| count >= config.min_shared_mx)
+            .filter(|(_, &count)| count >= config.min_endpoint_hits)
             .map(|(&ep, _)| ep)
             .collect();
 
         // Check specificity: how many different paths does this molecule connect to?
         let connected_paths: FxHashSet<usize> =
-            strong_hits.iter().map(|ep| ep.path_idx).collect();
+            strong_eps.iter().map(|ep| ep.path_idx).collect();
 
         if connected_paths.len() < 2 || connected_paths.len() > config.max_path_connections {
             scanned += 1;
             continue;
         }
 
-        // Record bridge evidence for each pair of endpoints from different paths
-        for i in 0..strong_hits.len() {
-            for j in (i + 1)..strong_hits.len() {
-                let ep1 = strong_hits[i];
-                let ep2 = strong_hits[j];
+        // Record bridge evidence for each pair of path-endpoints from different paths
+        for i in 0..strong_eps.len() {
+            for j in (i + 1)..strong_eps.len() {
+                let ep1 = strong_eps[i];
+                let ep2 = strong_eps[j];
                 if ep1.path_idx == ep2.path_idx {
                     continue;
                 }
@@ -799,11 +835,12 @@ pub fn merge_paths(
     links.sort_by(|a, b| b.bridge_count.cmp(&a.bridge_count));
 
     log::info!(
-        "Found {} merge links (min_bridges={}, min_path_size={}, min_density={:.3})",
+        "Found {} merge links (min_bridges={}, min_path_size={}, min_density={:.3}, min_ep_hits={})",
         links.len(),
         config.min_bridges,
         config.min_path_size,
-        config.min_bridge_density
+        config.min_bridge_density,
+        config.min_endpoint_hits
     );
 
     // Filter out promiscuous endpoints that appear in too many links.
@@ -1107,6 +1144,7 @@ mod tests {
             min_path_size: 50,
             max_links_per_endpoint: 3,
             min_bridge_density: 0.0,
+            min_endpoint_hits: 1,
         };
 
         let result = merge_paths(&paths, &mxs, &config);
