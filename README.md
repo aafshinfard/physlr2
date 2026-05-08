@@ -28,7 +28,7 @@ Physlr 2 takes linked-read sequencing data (10x Genomics Chromium or MGI stLFR) 
 ## Overview
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-stages.png" alt="Physlr pipeline stages" width="600">
+  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-stages.png" alt="Physlr pipeline stages" width="300">
 </p>
 
 Physlr 2 performs two main tasks:
@@ -36,16 +36,18 @@ Physlr 2 performs two main tasks:
 1. **Physical map construction** — builds an ordered map of molecules along each chromosome from linked-read barcodes.
 2. **Assembly scaffolding** — uses the physical map to order and orient contigs from a draft genome assembly.
 
+An optional **merge-paths** post-processing step can further improve physical map contiguity by identifying non-backbone "bridge" molecules that share minimizers with the endpoints of adjacent backbone paths, providing evidence to merge them. On human stLFR data (NA12878 + NA24143), merge-paths adds 9 true-positive merges with zero false positives using the default parameters.
+
 ### Physical Map Visualization
 
 Backbone paths mapped to the GRCh38 reference genome for two human cell lines:
 
-| NA12878 (stLFR) | NA24143 (stLFR) |
-|:---:|:---:|
-| ![NA12878 backbone](results/na12878_backbone.png) | ![NA24143 backbone](results/na24143_backbone.png) |
-| ![NA12878 reference](results/na12878_reference.png) | ![NA24143 reference](results/na24143_reference.png) |
+| | NA12878 (stLFR) | NA24143 (stLFR) |
+|:---|:---:|:---:|
+| **Backbone** | [<img src="results/na12878_backbone.png" width="300">](results/na12878_backbone.png) | [<img src="results/na24143_backbone.png" width="300">](results/na24143_backbone.png) |
+| **Reference** | [<img src="results/na12878_reference.png" width="300">](results/na12878_reference.png) | [<img src="results/na24143_reference.png" width="300">](results/na24143_reference.png) |
 
-*Top: backbone paths colored by reference chromosome. Bottom: reference chromosomes colored by backbone path.*
+*Backbone: paths colored by reference chromosome. Reference: chromosomes colored by backbone path. Click to enlarge.*
 
 ## Installation
 
@@ -111,6 +113,12 @@ physlr --help
 
 ```bash
 physlr physical-map reads.mxs.tsv -o output/ -p mygenome
+```
+
+To also run the optional **merge-paths** step (merges adjacent backbone paths using bridge molecule evidence, improving contiguity):
+
+```bash
+physlr physical-map reads.mxs.tsv -o output/ -p mygenome --merge-paths
 ```
 
 ### One-command scaffolding
