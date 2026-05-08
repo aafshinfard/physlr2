@@ -17,7 +17,7 @@ This document provides step-by-step instructions to reproduce the Physlr 2 physi
 
 | Resource | Minimum | Recommended |
 |----------|---------|-------------|
-| RAM | 128 GB | 200 GB |
+| RAM | 120 GB | 128 GB |
 | CPU cores | 8 | 16 |
 | Disk space | 600 GB | 1 TB |
 | Wall time | 24 hours | 12 hours |
@@ -216,5 +216,3 @@ Ensure Python 3 with matplotlib is installed: `pip install matplotlib`.
 **Resuming interrupted runs:**
 The `scripts/reproduce.sh` script checks for existing output files and skips completed steps. Re-run it to resume.
 
-**SLURM cluster:**
-See `shpc/README.md` for SLURM job scripts that run the full pipeline on a cluster with proper resource allocation.
