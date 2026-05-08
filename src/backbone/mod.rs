@@ -625,14 +625,14 @@ pub struct MergePathsConfig {
 impl Default for MergePathsConfig {
     fn default() -> Self {
         Self {
-            endpoint_depth: 15,
+            endpoint_depth: 25,
             min_shared_mx: 3,
             min_bridges: 2,
             max_path_connections: 2,
             min_path_size: 50,
             max_links_per_endpoint: 1,
             min_bridge_density: 0.01,
-            min_endpoint_hits: 3,
+            min_endpoint_hits: 4,
         }
     }
 }
