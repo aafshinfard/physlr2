@@ -367,6 +367,55 @@ enum Commands {
         output: String,
     },
 
+    /// End-to-end pipeline: build physical map from FASTQ and scaffold a draft assembly
+    Pipeline {
+        /// Input linked-read FASTQ file(s) (may be gzipped)
+        #[arg(required = true)]
+        input: Vec<String>,
+        /// Draft assembly FASTA to scaffold
+        #[arg(long)]
+        draft: String,
+        /// Output directory
+        #[arg(short, long, default_value = ".")]
+        outdir: String,
+        /// Output prefix
+        #[arg(short, long, default_value = "physlr")]
+        prefix: String,
+        /// K-mer size for minimizer extraction
+        #[arg(short, long, default_value_t = 32)]
+        k: usize,
+        /// Window size for minimizer extraction
+        #[arg(short, long, default_value_t = 32)]
+        w: usize,
+        /// Minimum minimizers per barcode
+        #[arg(long, default_value_t = 100)]
+        min_bx_count: usize,
+        /// Maximum minimizers per barcode
+        #[arg(long, default_value_t = 5000)]
+        max_bx_count: usize,
+        /// Minimum shared minimizers for overlap
+        #[arg(long, default_value_t = 10)]
+        min_overlap: u32,
+        /// Edge filter percentile
+        #[arg(long, default_value_t = 90.0)]
+        edge_percentile: f64,
+        /// Minimum branch size for pruning
+        #[arg(long, default_value_t = 10)]
+        prune_branches: usize,
+        /// Minimum path length
+        #[arg(long, default_value_t = 50)]
+        min_path_size: usize,
+        /// Minimum mapping score
+        #[arg(long, default_value_t = 10)]
+        min_map_score: u32,
+        /// Gap size in scaffolds (Ns between contigs)
+        #[arg(long, default_value_t = 100)]
+        gap_size: usize,
+        /// Expected genome size in bp (optional, for NG50 reporting only)
+        #[arg(short = 'g', long)]
+        genome_size: Option<u64>,
+    },
+
     /// Run the full physical map pipeline from linked-read FASTQ files
     PhysicalMap {
         /// Input linked-read FASTQ file(s) (may be gzipped)
@@ -1000,6 +1049,142 @@ fn main() -> Result<()> {
             let paths = physlr::io::read_paths(&input)?;
             let mut writer = physlr::io::open_writer(&output)?;
             physlr::report::backbone_to_dot(&paths, &mut *writer)?;
+        }
+
+        Commands::Pipeline {
+            input,
+            draft,
+            outdir,
+            prefix,
+            k,
+            w,
+            min_bx_count,
+            max_bx_count,
+            min_overlap,
+            edge_percentile,
+            prune_branches,
+            min_path_size,
+            min_map_score,
+            gap_size,
+            genome_size,
+        } => {
+            std::fs::create_dir_all(&outdir)?;
+
+            // ── Phase 1: Physical map ───────────────────────────────────
+            timer.log("=== Phase 1: Building physical map ===");
+
+            timer.log(&format!(
+                "Step 1: Indexing minimizers from {} file(s) (k={}, w={})...",
+                input.len(),
+                k,
+                w
+            ));
+            let mut bx_to_mxs = rustc_hash::FxHashMap::default();
+            for file in &input {
+                timer.log(&format!("  Processing {}", file));
+                let file_mxs = physlr::minimizer::index_file(file, k, w)?;
+                for (bx, mxs) in file_mxs {
+                    bx_to_mxs
+                        .entry(bx)
+                        .or_insert_with(rustc_hash::FxHashSet::default)
+                        .extend(mxs);
+                }
+            }
+            timer.log(&format!("Indexed {} barcodes", bx_to_mxs.len()));
+
+            timer.log("Step 2: Filtering minimizers...");
+            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
+            physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
+            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
+            physlr::minimizer::remove_repetitive(&mut bx_to_mxs, None);
+
+            let filtered_path = format!("{}/{}.filtered.tsv", outdir, prefix);
+            let mut writer = physlr::io::open_writer(&filtered_path)?;
+            physlr::io::write_minimizers(&bx_to_mxs, &mut *writer)?;
+            drop(writer);
+
+            timer.log("Step 3: Computing overlaps...");
+            let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
+
+            timer.log("Step 4: Filtering edges...");
+            physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
+
+            timer.log("Step 5: Separating molecules...");
+            let mol_g = physlr::molecules::separate_molecules(
+                &g,
+                "bc+cc",
+                &rustc_hash::FxHashSet::default(),
+            );
+
+            timer.log("Step 6: Extracting backbone paths...");
+            let config = BackboneConfig {
+                prune_branch_size: prune_branches,
+                prune_bridge_size: 10,
+                prune_junction_size: 200,
+                min_path_size,
+            };
+            let backbones = physlr::backbone::extract_named_backbones(&mol_g, &config);
+
+            let backbone_path = format!("{}/{}.backbone.path", outdir, prefix);
+            let mut writer = physlr::io::open_writer(&backbone_path)?;
+            physlr::io::write_paths(&backbones, &mut *writer)?;
+            drop(writer);
+
+            let pm_metrics = physlr::report::compute_physical_map_metrics(&backbones, None);
+            timer.log(&format!(
+                "Physical map: {} paths, {} total molecules",
+                pm_metrics.num_paths, pm_metrics.total_molecules
+            ));
+
+            // ── Phase 2: Scaffolding ────────────────────────────────────
+            timer.log("=== Phase 2: Scaffolding draft assembly ===");
+
+            timer.log("Indexing draft assembly contigs...");
+            let query_mxs = physlr::minimizer::index_file_ordered(&draft, k, w)?;
+            timer.log(&format!("Indexed {} contigs", query_mxs.len()));
+
+            timer.log("Mapping draft assembly to physical map...");
+            let mx_to_pos = physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
+            let mappings = physlr::map::map_to_backbone(&query_mxs, &mx_to_pos, min_map_score);
+            let scaffold_paths = physlr::map::bed_to_scaffold_paths(&mappings, min_map_score);
+
+            timer.log("Producing scaffolded assembly...");
+            let draft_seqs = physlr::io::read_fasta(&draft)?;
+            let scaffold_config = ScaffoldConfig {
+                gap_size,
+                min_score: min_map_score,
+                min_length: 0,
+            };
+            let scaffolds =
+                physlr::scaffold::scaffold_assembly(&draft_seqs, &scaffold_paths, &scaffold_config);
+
+            let scaffolds_path = format!("{}/{}.scaffolds.fa", outdir, prefix);
+            let mut writer = physlr::io::open_writer(&scaffolds_path)?;
+            physlr::io::write_fasta(&scaffolds, &mut *writer)?;
+            drop(writer);
+
+            let draft_ordered = physlr::io::read_fasta_ordered(&draft)?;
+            let before_metrics =
+                physlr::report::compute_assembly_metrics(&draft_ordered, genome_size);
+            let after_metrics = physlr::report::compute_assembly_metrics(&scaffolds, genome_size);
+
+            let report_path = format!("{}/{}.report.json", outdir, prefix);
+            let mut writer = physlr::io::open_writer(&report_path)?;
+            physlr::report::write_json_report(
+                &pm_metrics,
+                Some(&before_metrics),
+                Some(&after_metrics),
+                &mut *writer,
+            )?;
+            drop(writer);
+
+            let mut stdout = std::io::stdout();
+            writeln!(stdout, "\n=== Before Scaffolding ===")?;
+            physlr::report::write_metrics_tsv(&before_metrics, "draft", &mut stdout)?;
+            writeln!(stdout, "\n=== After Scaffolding ===")?;
+            physlr::report::write_metrics_tsv(&after_metrics, "physlr", &mut stdout)?;
+
+            timer.log("Pipeline complete");
         }
 
         Commands::PhysicalMap {
