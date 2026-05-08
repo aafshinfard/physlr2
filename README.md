@@ -25,7 +25,6 @@
 - [Commands](#commands)
 - [Parameters](#parameters)
 - [Reproducing Results](#reproducing-results)
-- [Comparison with Physlr v1](#comparison-with-physlr-v1)
 - [Project Structure](#project-structure)
 - [Citation](#citation)
 
@@ -347,19 +346,6 @@ Merges adjacent backbone paths using bridge molecule evidence. Defaults optimize
 See **[REPRODUCING.md](REPRODUCING.md)** for step-by-step instructions to reproduce the NA12878 and NA24143 results shown above, including data download links and the automated pipeline script.
 
 ---
-
-## Comparison with Physlr v1
-
-| | Physlr v1 | Physlr 2 |
-|---|-----------|----------|
-| **Language** | Python + C++ | Rust |
-| **Graph library** | NetworkX | petgraph |
-| **Pipeline driver** | GNU Make | Snakemake + CLI subcommands |
-| **Minimizer extraction** | External (indexlr/btllib) | Built-in + btllib support |
-| **Parallelism** | Limited | rayon (data-parallel) |
-| **Memory** | Python dicts + NetworkX | Compact hash maps (rustc-hash) |
-| **Molecule separation** | Louvain communities | Biconnected components / k-clique / cosine |
-| **Path merging** | — | Bridge molecule evidence (merge-paths) |
 
 ---
 
