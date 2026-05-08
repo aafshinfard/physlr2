@@ -1,6 +1,5 @@
 [![Published in DNA](https://img.shields.io/badge/Published%20in-DNA-blue.svg)](https://doi.org/10.3390/dna2020009)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Conda](https://img.shields.io/conda/dn/bioconda/physlr2?label=Conda%20downloads)](https://anaconda.org/bioconda/physlr2)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-logo-transparent.png" alt="Physlr logo" width="400">
@@ -50,38 +49,61 @@ Backbone paths mapped to the GRCh38 reference genome for two human cell lines:
 
 ## Installation
 
-### From Conda (recommended)
+### Install Rust
+
+If you do not have Rust installed, install it via [rustup](https://rustup.rs/):
 
 ```bash
-conda install -c bioconda physlr2
+curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
 ```
 
-### From Source
-
-Requires Rust 1.70 or newer.
+### Build from Source
 
 ```bash
 git clone https://github.com/aafshinfard/physlr2.git
 cd physlr2
 cargo build --release
-# Binary: target/release/physlr
 ```
 
-To install system-wide:
+The compiled binary will be at `target/release/physlr`. You can either:
+
+**Option A — Add to PATH (recommended):**
+
+```bash
+export PATH="$(pwd)/target/release:$PATH"
+# Add the line above to ~/.bashrc or ~/.zshrc to make it permanent
+```
+
+**Option B — Install to ~/.cargo/bin:**
 
 ```bash
 cargo install --path .
 ```
 
+**Option C — Copy to a system directory:**
+
+```bash
+sudo cp target/release/physlr /usr/local/bin/
+```
+
+### Verify Installation
+
+```bash
+physlr --version
+physlr --help
+```
+
 ### Dependencies
 
 **Build:**
-- Rust ≥ 1.70
+- [Rust](https://www.rust-lang.org/tools/install) ≥ 1.70 (includes cargo)
 
-**Runtime (optional, for visualization and workflow):**
-- Python ≥ 3.8 with matplotlib (for `plotpaf.py`)
-- Snakemake ≥ 7.0 (for automated workflow)
-- QUAST (for reference-based evaluation)
+**Runtime (optional):**
+- [btllib](https://github.com/bcgsc/btllib) — for `indexlr` minimizer extraction backend (`conda install -c bioconda btllib`)
+- Python ≥ 3.8 with matplotlib — for backbone-vs-reference visualization (`scripts/plotpaf.py`)
+- [Snakemake](https://snakemake.readthedocs.io/) ≥ 7.0 — for automated workflow (`workflow/Snakefile`)
+- [QUAST](https://github.com/ablab/quast) — for reference-based assembly evaluation
 
 ## Quick Start
 
