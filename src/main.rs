@@ -237,7 +237,7 @@ enum Commands {
         #[arg(short, long, default_value = "-")]
         output: String,
         /// Number of molecules from each path end to use as endpoints
-        #[arg(long, default_value_t = 15)]
+        #[arg(long, default_value_t = 25)]
         endpoint_depth: usize,
         /// Minimum shared minimizers for a bridge molecule
         #[arg(long, default_value_t = 3)]
@@ -259,7 +259,7 @@ enum Commands {
         min_bridge_density: f64,
         /// Minimum endpoint molecules a bridge must connect to on each side.
         /// Higher values require stronger neighborhood evidence per bridge.
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 4)]
         min_endpoint_hits: usize,
     },
 
