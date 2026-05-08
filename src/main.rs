@@ -483,7 +483,11 @@ fn main() -> Result<()> {
 
             timer.log(&format!(
                 "Indexing minimizers from {} file(s) (k={}, w={}, indexer={}, repeat_filter={})",
-                input.len(), k, w, indexer, repeat_bf.is_some()
+                input.len(),
+                k,
+                w,
+                indexer,
+                repeat_bf.is_some()
             ));
 
             let mut bx_to_mxs = rustc_hash::FxHashMap::default();
@@ -495,10 +499,9 @@ fn main() -> Result<()> {
                     match indexer.as_str() {
                         "builtin" => physlr::minimizer::index_file(file, k, w)?,
                         "btllib" => physlr::minimizer::index_file_btllib(file, k, w, threads)?,
-                        other => anyhow::bail!(
-                            "Unknown indexer '{}'. Use 'builtin' or 'btllib'.",
-                            other
-                        ),
+                        other => {
+                            anyhow::bail!("Unknown indexer '{}'. Use 'builtin' or 'btllib'.", other)
+                        }
                     }
                 };
                 // Merge: union minimizer sets per barcode
@@ -509,7 +512,11 @@ fn main() -> Result<()> {
                         .extend(mxs);
                 }
             }
-            timer.log(&format!("Indexed {} barcodes from {} file(s)", bx_to_mxs.len(), input.len()));
+            timer.log(&format!(
+                "Indexed {} barcodes from {} file(s)",
+                bx_to_mxs.len(),
+                input.len()
+            ));
 
             let mut writer = physlr::io::open_writer(&output)?;
             physlr::minimizer::write_minimizer_tsv(&bx_to_mxs, &mut *writer)?;
@@ -527,13 +534,15 @@ fn main() -> Result<()> {
         } => {
             timer.log(&format!(
                 "Detecting repetitive k-mers from {} file(s) (k={}, multiplier={}, CMS={:.1}GB)",
-                input.len(), k, multiplier, cms_size as f64 / 1_073_741_824.0
+                input.len(),
+                k,
+                multiplier,
+                cms_size as f64 / 1_073_741_824.0
             ));
 
             let paths: Vec<&str> = input.iter().map(|s| s.as_str()).collect();
-            let (bf, hist) = physlr::repeat::detect_repeats(
-                &paths, k, multiplier, bf_size, cms_size,
-            )?;
+            let (bf, hist) =
+                physlr::repeat::detect_repeats(&paths, k, multiplier, bf_size, cms_size)?;
 
             timer.log(&format!(
                 "Repeat filter: BF size={} bytes, popcount={}, FPR={:.4}%",
@@ -721,7 +730,9 @@ fn main() -> Result<()> {
 
             let target_barcodes: Vec<String> = if barcodes == "top5" {
                 // Pick 5 highest-degree barcodes
-                let mut degrees: Vec<(String, usize)> = g.graph.node_indices()
+                let mut degrees: Vec<(String, usize)> = g
+                    .graph
+                    .node_indices()
                     .map(|ni| {
                         let name = g.names.get_name(ni).unwrap().to_string();
                         let deg = g.graph.neighbors(ni).count();
@@ -785,7 +796,10 @@ fn main() -> Result<()> {
             timer.log(&format!("Read {} backbone paths", paths.len()));
 
             let mxs = physlr::io::read_minimizers(&split_mxs)?;
-            timer.log(&format!("Read split minimizers for {} molecules", mxs.len()));
+            timer.log(&format!(
+                "Read split minimizers for {} molecules",
+                mxs.len()
+            ));
 
             let config = physlr::backbone::MergePathsConfig {
                 endpoint_depth,
@@ -1028,7 +1042,11 @@ fn main() -> Result<()> {
             timer.log(&format!("Wrote overlap graph to {}", overlap_path));
 
             timer.log("Step 4: Separating molecules...");
-            let mol_g = physlr::molecules::separate_molecules(&g, "bc+cc", &rustc_hash::FxHashSet::default());
+            let mol_g = physlr::molecules::separate_molecules(
+                &g,
+                "bc+cc",
+                &rustc_hash::FxHashSet::default(),
+            );
 
             let mol_path = format!("{}/{}.mol.tsv", outdir, prefix);
             let mut writer = physlr::io::open_writer(&mol_path)?;
@@ -1092,7 +1110,11 @@ fn main() -> Result<()> {
             let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
             physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
 
-            let mol_g = physlr::molecules::separate_molecules(&g, "bc+cc", &rustc_hash::FxHashSet::default());
+            let mol_g = physlr::molecules::separate_molecules(
+                &g,
+                "bc+cc",
+                &rustc_hash::FxHashSet::default(),
+            );
 
             let config = BackboneConfig::default();
             let backbones = physlr::backbone::extract_named_backbones(&mol_g, &config);
@@ -1107,8 +1129,7 @@ fn main() -> Result<()> {
             let mx_to_pos = physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
             let mappings = physlr::map::map_to_backbone(&query_mxs, &mx_to_pos, min_map_score);
 
-            let scaffold_paths =
-                physlr::map::bed_to_scaffold_paths(&mappings, min_map_score);
+            let scaffold_paths = physlr::map::bed_to_scaffold_paths(&mappings, min_map_score);
 
             timer.log("Producing scaffolded assembly...");
             let draft_seqs = physlr::io::read_fasta(&draft)?;

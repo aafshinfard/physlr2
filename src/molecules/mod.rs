@@ -103,7 +103,11 @@ impl LocalGraph {
             }
         }
 
-        Self { n, local_to_global, adj }
+        Self {
+            n,
+            local_to_global,
+            adj,
+        }
     }
 }
 
@@ -230,14 +234,12 @@ pub fn trace_molecules(
             let mut new_communities = Vec::new();
             let strat_name = format!("{:?}", strat);
             println!("\n--- Strategy: {} ---", strat_name);
-            println!("Input: {} communities, sizes: {:?}",
-                communities.len(),
-                {
-                    let mut sizes: Vec<_> = communities.iter().map(|c| c.len()).collect();
-                    sizes.sort_unstable_by(|a, b| b.cmp(a));
-                    sizes.truncate(20);
-                    sizes
-                });
+            println!("Input: {} communities, sizes: {:?}", communities.len(), {
+                let mut sizes: Vec<_> = communities.iter().map(|c| c.len()).collect();
+                sizes.sort_unstable_by(|a, b| b.cmp(a));
+                sizes.truncate(20);
+                sizes
+            });
 
             for (ci, component) in communities.iter().enumerate() {
                 let result: Vec<Vec<usize>> = match strat {
@@ -252,15 +254,24 @@ pub fn trace_molecules(
                         }
                         merge_local(&lg, &clusters, params.merge_cutoff)
                     }
-                    Strategy::Sqcos => {
-                        sqcos_local(&lg, component, true, params.sqcos_threshold, params.skip_small)
-                    }
+                    Strategy::Sqcos => sqcos_local(
+                        &lg,
+                        component,
+                        true,
+                        params.sqcos_threshold,
+                        params.skip_small,
+                    ),
                     Strategy::SqcosBin => {
                         let bins = bin_local(component, params.bin_max_size);
                         let mut clusters = Vec::new();
                         for bin in &bins {
                             clusters.extend(sqcos_local(
-                                &lg, bin, true, params.sqcos_threshold, params.skip_small));
+                                &lg,
+                                bin,
+                                true,
+                                params.sqcos_threshold,
+                                params.skip_small,
+                            ));
                         }
                         merge_local(&lg, &clusters, params.merge_cutoff)
                     }
@@ -270,9 +281,14 @@ pub fn trace_molecules(
                         if ci < 3 {
                             let bc_sizes: Vec<_> = bc_comps.iter().map(|c| c.len()).collect();
                             let total_bc: usize = bc_sizes.iter().sum();
-                            println!("  Component {} (size {}): bc → {} components, total={}, lost={}",
-                                ci, component.len(), bc_comps.len(), total_bc,
-                                component.len() - total_bc);
+                            println!(
+                                "  Component {} (size {}): bc → {} components, total={}, lost={}",
+                                ci,
+                                component.len(),
+                                bc_comps.len(),
+                                total_bc,
+                                component.len() - total_bc
+                            );
                         }
                         let mut all_result = Vec::new();
                         let mut total_clusters = 0;
@@ -301,8 +317,11 @@ pub fn trace_molecules(
                             all_result.extend(merged);
                         }
                         if ci < 3 {
-                            println!("    Total: {} clusters → {} merged communities",
-                                total_clusters, all_result.len());
+                            println!(
+                                "    Total: {} clusters → {} merged communities",
+                                total_clusters,
+                                all_result.len()
+                            );
                         }
                         all_result
                     }
@@ -312,8 +331,13 @@ pub fn trace_molecules(
                     let mut sizes: Vec<_> = result.iter().map(|c| c.len()).collect();
                     sizes.sort_unstable_by(|a, b| b.cmp(a));
                     sizes.truncate(10);
-                    println!("  Component {} (size {}) → {} communities, sizes: {:?}",
-                        ci, component.len(), result.len(), sizes);
+                    println!(
+                        "  Component {} (size {}) → {} communities, sizes: {:?}",
+                        ci,
+                        component.len(),
+                        result.len(),
+                        sizes
+                    );
                 }
                 new_communities.extend(result);
             }
@@ -323,8 +347,10 @@ pub fn trace_molecules(
             sizes.sort_unstable_by(|a, b| b.cmp(a));
             let total_nodes: usize = communities.iter().map(|c| c.len()).sum();
             let gt1 = communities.iter().filter(|c| c.len() > 1).count();
-            println!("Output: {} communities, sizes: {:?}",
-                communities.len(), { sizes.truncate(20); sizes });
+            println!("Output: {} communities, sizes: {:?}", communities.len(), {
+                sizes.truncate(20);
+                sizes
+            });
             println!("  Total nodes in communities: {}", total_nodes);
             println!("  Communities with >1 member: {}", gt1);
         }
@@ -362,7 +388,10 @@ pub fn separate_molecules_with_params(
     junctions: &FxHashSet<String>,
     params: &MoleculeParams,
 ) -> NamedGraph {
-    log::info!("Separating barcodes into molecules (strategy={})...", strategy);
+    log::info!(
+        "Separating barcodes into molecules (strategy={})...",
+        strategy
+    );
 
     let strategies = parse_strategy(strategy);
     let strategies = if strategies.is_empty() {
@@ -376,7 +405,10 @@ pub fn separate_molecules_with_params(
     let nodes: Vec<NodeIndex> = g.graph.node_indices().collect();
 
     let junction_indices: FxHashSet<NodeIndex> = if use_junctions {
-        junctions.iter().filter_map(|name| g.names.get_idx(name)).collect()
+        junctions
+            .iter()
+            .filter_map(|name| g.names.get_idx(name))
+            .collect()
     } else {
         FxHashSet::default()
     };
@@ -401,7 +433,12 @@ pub fn separate_molecules_with_params(
         .par_iter()
         .map(|&u| {
             let assignment = determine_molecules(
-                &g.graph, u, &strategies, use_junctions, &junction_indices, params,
+                &g.graph,
+                u,
+                &strategies,
+                use_junctions,
+                &junction_indices,
+                params,
             );
             let n_mols = if assignment.is_empty() {
                 0
@@ -412,9 +449,15 @@ pub fn separate_molecules_with_params(
             DIAG_TOTAL_COMMUNITIES.fetch_add(n_mols as u64, Ordering::Relaxed);
             DIAG_TOTAL_ASSIGNED.fetch_add(assignment.len() as u64, Ordering::Relaxed);
             DIAG_MAX_COMMUNITIES.fetch_max(n_mols as u64, Ordering::Relaxed);
-            if n_mols > 10 { DIAG_BARCODES_GT10.fetch_add(1, Ordering::Relaxed); }
-            if n_mols > 20 { DIAG_BARCODES_GT20.fetch_add(1, Ordering::Relaxed); }
-            if n_mols > 50 { DIAG_BARCODES_GT50.fetch_add(1, Ordering::Relaxed); }
+            if n_mols > 10 {
+                DIAG_BARCODES_GT10.fetch_add(1, Ordering::Relaxed);
+            }
+            if n_mols > 20 {
+                DIAG_BARCODES_GT20.fetch_add(1, Ordering::Relaxed);
+            }
+            if n_mols > 50 {
+                DIAG_BARCODES_GT50.fetch_add(1, Ordering::Relaxed);
+            }
             (u, assignment)
         })
         .collect();
@@ -478,7 +521,9 @@ pub fn separate_molecules_with_params(
     let n_singletons = mol_graph.remove_singletons();
     log::info!(
         "Molecule graph: V={} E={} (removed {} singletons)",
-        mol_graph.num_vertices(), mol_graph.num_edges(), n_singletons
+        mol_graph.num_vertices(),
+        mol_graph.num_edges(),
+        n_singletons
     );
     mol_graph
 }
@@ -539,22 +584,30 @@ fn determine_molecules(
                     for bin in &bins {
                         clusters.extend(k3_local(&lg, bin));
                     }
-                    new_communities.extend(
-                        merge_local(&lg, &clusters, params.merge_cutoff));
+                    new_communities.extend(merge_local(&lg, &clusters, params.merge_cutoff));
                 }
                 Strategy::Sqcos => {
                     new_communities.extend(sqcos_local(
-                        &lg, component, true, params.sqcos_threshold, params.skip_small));
+                        &lg,
+                        component,
+                        true,
+                        params.sqcos_threshold,
+                        params.skip_small,
+                    ));
                 }
                 Strategy::SqcosBin => {
                     let bins = bin_local(component, params.bin_max_size);
                     let mut clusters = Vec::new();
                     for bin in &bins {
                         clusters.extend(sqcos_local(
-                            &lg, bin, true, params.sqcos_threshold, params.skip_small));
+                            &lg,
+                            bin,
+                            true,
+                            params.sqcos_threshold,
+                            params.skip_small,
+                        ));
                     }
-                    new_communities.extend(
-                        merge_local(&lg, &clusters, params.merge_cutoff));
+                    new_communities.extend(merge_local(&lg, &clusters, params.merge_cutoff));
                 }
                 Strategy::Distributed => {
                     new_communities.extend(distributed_local(&lg, component, params));
@@ -1041,11 +1094,7 @@ fn bin_local(nodes: &[usize], max_size: usize) -> Vec<Vec<usize>> {
 // Merge communities sharing many cross-edges
 // ---------------------------------------------------------------------------
 
-fn merge_local(
-    lg: &LocalGraph,
-    communities: &[Vec<usize>],
-    cutoff: i64,
-) -> Vec<Vec<usize>> {
+fn merge_local(lg: &LocalGraph, communities: &[Vec<usize>], cutoff: i64) -> Vec<Vec<usize>> {
     if cutoff == -1 || communities.len() <= 1 {
         return communities.to_vec();
     }
@@ -1097,11 +1146,7 @@ fn merge_local(
 // Distributed: bc → bin → bc → k3 → merge (ensemble pipeline)
 // ---------------------------------------------------------------------------
 
-fn distributed_local(
-    lg: &LocalGraph,
-    nodes: &[usize],
-    params: &MoleculeParams,
-) -> Vec<Vec<usize>> {
+fn distributed_local(lg: &LocalGraph, nodes: &[usize], params: &MoleculeParams) -> Vec<Vec<usize>> {
     // Step 1: biconnected components
     let bc_components = bc_local(lg, nodes);
 
@@ -1140,7 +1185,11 @@ mod tests {
             adj[v * n + u] = true;
         }
         let local_to_global: Vec<NodeIndex> = (0..n).map(NodeIndex::new).collect();
-        LocalGraph { n, local_to_global, adj }
+        LocalGraph {
+            n,
+            local_to_global,
+            adj,
+        }
     }
 
     /// Build a NamedGraph from named vertices and weighted edges.
@@ -1289,9 +1338,9 @@ mod tests {
         // Graph: triangle (0,1,2) + edge (2,3) + edge (3,4)
         // Only nodes 0,1,2 should be in k3 communities.
         // Nodes 3,4 are connected by edges but not in any triangle.
-        let lg = make_local_graph(5, &[(0,1),(1,2),(0,2),(2,3),(3,4)]);
-        let result = sorted(k3_local(&lg, &[0,1,2,3,4]));
-        assert_eq!(result, vec![vec![0,1,2]]);
+        let lg = make_local_graph(5, &[(0, 1), (1, 2), (0, 2), (2, 3), (3, 4)]);
+        let result = sorted(k3_local(&lg, &[0, 1, 2, 3, 4]));
+        assert_eq!(result, vec![vec![0, 1, 2]]);
         // Node 3 and 4 should NOT appear in any community
     }
 
@@ -1306,7 +1355,7 @@ mod tests {
     #[test]
     fn test_k3_clique_of_4() {
         // Complete graph K4: all 4 triangles share edges → one community
-        let lg = make_local_graph(4, &[(0,1),(0,2),(0,3),(1,2),(1,3),(2,3)]);
+        let lg = make_local_graph(4, &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]);
         let result = sorted(k3_local(&lg, &[0, 1, 2, 3]));
         assert_eq!(result, vec![vec![0, 1, 2, 3]]);
     }
@@ -1314,21 +1363,30 @@ mod tests {
     #[test]
     fn test_k3_chain_of_triangles() {
         // (0,1,2), (2,3,4), (4,5,6) — sharing single nodes only
-        let lg = make_local_graph(7, &[
-            (0,1),(0,2),(1,2),
-            (2,3),(2,4),(3,4),
-            (4,5),(4,6),(5,6),
-        ]);
-        let result = sorted(k3_local(&lg, &[0,1,2,3,4,5,6]));
+        let lg = make_local_graph(
+            7,
+            &[
+                (0, 1),
+                (0, 2),
+                (1, 2),
+                (2, 3),
+                (2, 4),
+                (3, 4),
+                (4, 5),
+                (4, 6),
+                (5, 6),
+            ],
+        );
+        let result = sorted(k3_local(&lg, &[0, 1, 2, 3, 4, 5, 6]));
         assert_eq!(result.len(), 3);
-        assert_eq!(result, vec![vec![0,1,2], vec![2,3,4], vec![4,5,6]]);
+        assert_eq!(result, vec![vec![0, 1, 2], vec![2, 3, 4], vec![4, 5, 6]]);
     }
 
     #[test]
     fn test_k3_overlapping_communities() {
         // Node 2 belongs to two communities — k-clique percolation allows overlap
-        let lg = make_local_graph(5, &[(0,1),(0,2),(1,2),(2,3),(2,4),(3,4)]);
-        let result = sorted(k3_local(&lg, &[0,1,2,3,4]));
+        let lg = make_local_graph(5, &[(0, 1), (0, 2), (1, 2), (2, 3), (2, 4), (3, 4)]);
+        let result = sorted(k3_local(&lg, &[0, 1, 2, 3, 4]));
         // Node 2 should appear in both communities
         let has_2: Vec<bool> = result.iter().map(|c| c.contains(&2)).collect();
         assert_eq!(has_2, vec![true, true]);
@@ -1348,8 +1406,8 @@ mod tests {
     #[test]
     fn test_sqcos_skip_small() {
         // With skip_small=10, a 3-node graph should be returned as-is
-        let lg = make_local_graph(3, &[(0,1),(1,2),(0,2)]);
-        let result = sqcos_local(&lg, &[0,1,2], true, 0.75, 10);
+        let lg = make_local_graph(3, &[(0, 1), (1, 2), (0, 2)]);
+        let result = sqcos_local(&lg, &[0, 1, 2], true, 0.75, 10);
         assert_eq!(result.len(), 1);
         let mut r = result[0].clone();
         r.sort_unstable();
@@ -1360,10 +1418,12 @@ mod tests {
     fn test_sqcos_dense_clique() {
         // K5 complete graph — all cosine similarities should be high
         // → should stay as one community
-        let edges: Vec<(usize,usize)> = (0..5).flat_map(|i| ((i+1)..5).map(move |j| (i,j))).collect();
+        let edges: Vec<(usize, usize)> = (0..5)
+            .flat_map(|i| ((i + 1)..5).map(move |j| (i, j)))
+            .collect();
         let lg = make_local_graph(5, &edges);
         // skip_small=2 so it actually runs the algorithm
-        let result = sqcos_local(&lg, &[0,1,2,3,4], true, 0.5, 2);
+        let result = sqcos_local(&lg, &[0, 1, 2, 3, 4], true, 0.5, 2);
         // Dense clique should remain one community
         assert_eq!(result.len(), 1);
     }
@@ -1373,14 +1433,26 @@ mod tests {
         // Two K4 cliques connected by a single edge — the bridge should be cut
         // Clique A: 0,1,2,3  Clique B: 4,5,6,7  Bridge: 3-4
         let mut edges = Vec::new();
-        for i in 0..4 { for j in (i+1)..4 { edges.push((i, j)); } }
-        for i in 4..8 { for j in (i+1)..8 { edges.push((i, j)); } }
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                edges.push((i, j));
+            }
+        }
+        for i in 4..8 {
+            for j in (i + 1)..8 {
+                edges.push((i, j));
+            }
+        }
         edges.push((3, 4)); // weak bridge
         let lg = make_local_graph(8, &edges);
         let nodes: Vec<usize> = (0..8).collect();
         let result = sorted(sqcos_local(&lg, &nodes, true, 0.5, 2));
         // Should split into two communities
-        assert!(result.len() >= 2, "Expected >=2 communities, got {}", result.len());
+        assert!(
+            result.len() >= 2,
+            "Expected >=2 communities, got {}",
+            result.len()
+        );
     }
 
     #[test]
@@ -1446,10 +1518,10 @@ mod tests {
     #[test]
     fn test_merge_no_cross_edges() {
         // Two communities with no edges between them → no merge
-        let lg = make_local_graph(4, &[(0,1), (2,3)]);
-        let communities = vec![vec![0,1], vec![2,3]];
+        let lg = make_local_graph(4, &[(0, 1), (2, 3)]);
+        let communities = vec![vec![0, 1], vec![2, 3]];
         let result = sorted(merge_local(&lg, &communities, 0));
-        assert_eq!(result, vec![vec![0,1], vec![2,3]]);
+        assert_eq!(result, vec![vec![0, 1], vec![2, 3]]);
     }
 
     #[test]
@@ -1457,38 +1529,49 @@ mod tests {
         // Two communities with many cross-edges → merge
         // Community A: {0,1,2}, Community B: {3,4,5}
         // Cross edges: 0-3, 0-4, 1-3, 1-4, 2-3 (5 cross edges, cutoff=3)
-        let lg = make_local_graph(6, &[
-            (0,1),(0,2),(1,2), // internal A
-            (3,4),(3,5),(4,5), // internal B
-            (0,3),(0,4),(1,3),(1,4),(2,3), // cross
-        ]);
-        let communities = vec![vec![0,1,2], vec![3,4,5]];
+        let lg = make_local_graph(
+            6,
+            &[
+                (0, 1),
+                (0, 2),
+                (1, 2), // internal A
+                (3, 4),
+                (3, 5),
+                (4, 5), // internal B
+                (0, 3),
+                (0, 4),
+                (1, 3),
+                (1, 4),
+                (2, 3), // cross
+            ],
+        );
+        let communities = vec![vec![0, 1, 2], vec![3, 4, 5]];
         let result = sorted(merge_local(&lg, &communities, 3));
-        assert_eq!(result, vec![vec![0,1,2,3,4,5]]);
+        assert_eq!(result, vec![vec![0, 1, 2, 3, 4, 5]]);
     }
 
     #[test]
     fn test_merge_below_cutoff() {
         // Only 1 cross edge, cutoff=5 → no merge
-        let lg = make_local_graph(4, &[(0,1),(2,3),(1,2)]);
-        let communities = vec![vec![0,1], vec![2,3]];
+        let lg = make_local_graph(4, &[(0, 1), (2, 3), (1, 2)]);
+        let communities = vec![vec![0, 1], vec![2, 3]];
         let result = sorted(merge_local(&lg, &communities, 5));
-        assert_eq!(result, vec![vec![0,1], vec![2,3]]);
+        assert_eq!(result, vec![vec![0, 1], vec![2, 3]]);
     }
 
     #[test]
     fn test_merge_disabled() {
         // cutoff=-1 disables merging
-        let lg = make_local_graph(4, &[(0,1),(1,2),(2,3),(0,2),(0,3),(1,3)]);
-        let communities = vec![vec![0,1], vec![2,3]];
+        let lg = make_local_graph(4, &[(0, 1), (1, 2), (2, 3), (0, 2), (0, 3), (1, 3)]);
+        let communities = vec![vec![0, 1], vec![2, 3]];
         let result = merge_local(&lg, &communities, -1);
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_merge_single_community() {
-        let lg = make_local_graph(3, &[(0,1),(1,2)]);
-        let communities = vec![vec![0,1,2]];
+        let lg = make_local_graph(3, &[(0, 1), (1, 2)]);
+        let communities = vec![vec![0, 1, 2]];
         let result = merge_local(&lg, &communities, 0);
         assert_eq!(result.len(), 1);
     }
@@ -1502,9 +1585,9 @@ mod tests {
         // Two triangles sharing a single node (bowtie)
         // bc splits at node 2 → {0,1} and {3,4}, each too small for k3
         // So distributed returns empty (no triangles in 2-node components)
-        let lg = make_local_graph(5, &[(0,1),(0,2),(1,2),(2,3),(2,4),(3,4)]);
+        let lg = make_local_graph(5, &[(0, 1), (0, 2), (1, 2), (2, 3), (2, 4), (3, 4)]);
         let params = MoleculeParams::default();
-        let result = distributed_local(&lg, &[0,1,2,3,4], &params);
+        let result = distributed_local(&lg, &[0, 1, 2, 3, 4], &params);
         assert!(result.is_empty());
     }
 
@@ -1512,11 +1595,24 @@ mod tests {
     fn test_distributed_larger() {
         // Two K4 cliques connected by node 3-4 bridge
         // bc should keep the cliques intact, k3 finds triangles
-        let lg = make_local_graph(8, &[
-            (0,1),(0,2),(0,3),(1,2),(1,3),(2,3), // K4: 0,1,2,3
-            (3,4), // bridge
-            (4,5),(4,6),(4,7),(5,6),(5,7),(6,7), // K4: 4,5,6,7
-        ]);
+        let lg = make_local_graph(
+            8,
+            &[
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (1, 2),
+                (1, 3),
+                (2, 3), // K4: 0,1,2,3
+                (3, 4), // bridge
+                (4, 5),
+                (4, 6),
+                (4, 7),
+                (5, 6),
+                (5, 7),
+                (6, 7), // K4: 4,5,6,7
+            ],
+        );
         let params = MoleculeParams::default();
         let result = distributed_local(&lg, &(0..8).collect::<Vec<_>>(), &params);
         // After bc removes AP node 3 and 4, remaining components have triangles
@@ -1561,11 +1657,15 @@ mod tests {
         // Clique A: a,b,c (triangle)  Clique B: d,e,f (triangle)
         // Bridge: c-d
         let g = make_named_graph(
-            &["a","b","c","d","e","f"],
+            &["a", "b", "c", "d", "e", "f"],
             &[
-                ("a","b",5), ("a","c",5), ("b","c",5),
-                ("c","d",2),
-                ("d","e",5), ("d","f",5), ("e","f",5),
+                ("a", "b", 5),
+                ("a", "c", 5),
+                ("b", "c", 5),
+                ("c", "d", 2),
+                ("d", "e", 5),
+                ("d", "f", 5),
+                ("e", "f", 5),
             ],
         );
         let junctions = FxHashSet::default();
@@ -1580,11 +1680,17 @@ mod tests {
         // z's neighbors are {a,b,c,d}. Among them: triangle a-b-c and triangle b-c-d.
         // k3 should find these triangles and produce molecule assignments.
         let g = make_named_graph(
-            &["z","a","b","c","d"],
+            &["z", "a", "b", "c", "d"],
             &[
-                ("z","a",5), ("z","b",5), ("z","c",5), ("z","d",5),
-                ("a","b",5), ("b","c",5), ("a","c",5), // triangle a-b-c
-                ("b","d",5), ("c","d",5),               // triangle b-c-d
+                ("z", "a", 5),
+                ("z", "b", 5),
+                ("z", "c", 5),
+                ("z", "d", 5),
+                ("a", "b", 5),
+                ("b", "c", 5),
+                ("a", "c", 5), // triangle a-b-c
+                ("b", "d", 5),
+                ("c", "d", 5), // triangle b-c-d
             ],
         );
         let junctions = FxHashSet::default();
@@ -1595,11 +1701,15 @@ mod tests {
     #[test]
     fn test_separate_molecules_deterministic() {
         let g = make_named_graph(
-            &["a","b","c","d","e","f"],
+            &["a", "b", "c", "d", "e", "f"],
             &[
-                ("a","b",5), ("a","c",5), ("b","c",5),
-                ("c","d",2),
-                ("d","e",5), ("d","f",5), ("e","f",5),
+                ("a", "b", 5),
+                ("a", "c", 5),
+                ("b", "c", 5),
+                ("c", "d", 2),
+                ("d", "e", 5),
+                ("d", "f", 5),
+                ("e", "f", 5),
             ],
         );
         let junctions = FxHashSet::default();
@@ -1616,8 +1726,8 @@ mod tests {
     #[test]
     fn test_ap_path() {
         // 0-1-2: node 1 is AP
-        let lg = make_local_graph(3, &[(0,1),(1,2)]);
-        let ap = articulation_points_local(&lg, &[0,1,2]);
+        let lg = make_local_graph(3, &[(0, 1), (1, 2)]);
+        let ap = articulation_points_local(&lg, &[0, 1, 2]);
         assert!(!ap[0]);
         assert!(ap[1]);
         assert!(!ap[2]);
@@ -1626,8 +1736,8 @@ mod tests {
     #[test]
     fn test_ap_triangle() {
         // Triangle: no APs
-        let lg = make_local_graph(3, &[(0,1),(1,2),(0,2)]);
-        let ap = articulation_points_local(&lg, &[0,1,2]);
+        let lg = make_local_graph(3, &[(0, 1), (1, 2), (0, 2)]);
+        let ap = articulation_points_local(&lg, &[0, 1, 2]);
         assert!(!ap[0]);
         assert!(!ap[1]);
         assert!(!ap[2]);
@@ -1636,8 +1746,8 @@ mod tests {
     #[test]
     fn test_ap_star() {
         // Star: center node 0 connected to 1,2,3,4 — node 0 is AP
-        let lg = make_local_graph(5, &[(0,1),(0,2),(0,3),(0,4)]);
-        let ap = articulation_points_local(&lg, &[0,1,2,3,4]);
+        let lg = make_local_graph(5, &[(0, 1), (0, 2), (0, 3), (0, 4)]);
+        let ap = articulation_points_local(&lg, &[0, 1, 2, 3, 4]);
         assert!(ap[0]);
         for (i, &is_ap) in ap.iter().enumerate().take(5).skip(1) {
             assert!(!is_ap, "node {} should not be AP", i);
@@ -1648,8 +1758,8 @@ mod tests {
     fn test_ap_complex() {
         // 0-1-2-3, 1-3 (cycle with tail)
         // 0-1, 1-2, 2-3, 1-3 → node 1 is AP (removing it disconnects 0)
-        let lg = make_local_graph(4, &[(0,1),(1,2),(2,3),(1,3)]);
-        let ap = articulation_points_local(&lg, &[0,1,2,3]);
+        let lg = make_local_graph(4, &[(0, 1), (1, 2), (2, 3), (1, 3)]);
+        let ap = articulation_points_local(&lg, &[0, 1, 2, 3]);
         assert!(ap[1]);
         assert!(!ap[0]);
         assert!(!ap[2]);
@@ -1697,18 +1807,22 @@ mod tests {
         // that has a center node with neighbors forming overlapping structures.
         let names = &["center", "a", "b", "c", "d", "e"];
         let edges = &[
-            ("center", "a", 1), ("center", "b", 1), ("center", "c", 1),
-            ("center", "d", 1), ("center", "e", 1),
-            ("a", "b", 1), ("b", "c", 1),  // a-b-c path
-            ("d", "e", 1),                   // d-e edge
+            ("center", "a", 1),
+            ("center", "b", 1),
+            ("center", "c", 1),
+            ("center", "d", 1),
+            ("center", "e", 1),
+            ("a", "b", 1),
+            ("b", "c", 1), // a-b-c path
+            ("d", "e", 1), // d-e edge
         ];
         let g = make_named_graph(names, edges);
         let junctions = FxHashSet::default();
         let strategies = vec![Strategy::Cc];
         let params = MoleculeParams::default();
         let center = g.names.get_idx("center").unwrap();
-        let assignment = determine_molecules(
-            &g.graph, center, &strategies, false, &junctions, &params);
+        let assignment =
+            determine_molecules(&g.graph, center, &strategies, false, &junctions, &params);
         // CC should find: {a,b,c,d,e} as one component (all connected via center's edges)
         // Wait, CC operates on the subgraph of neighbors, not including center.
         // Neighbors: a,b,c,d,e. Edges among them: a-b, b-c, d-e.

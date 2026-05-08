@@ -19,7 +19,11 @@ impl BloomFilter {
     pub fn new(size_bytes: u64, n_hashes: u32) -> Self {
         let n_bits = size_bytes * 8;
         let n_words = n_bits.div_ceil(64) as usize;
-        Self { bits: vec![0u64; n_words], n_bits, n_hashes }
+        Self {
+            bits: vec![0u64; n_words],
+            n_bits,
+            n_hashes,
+        }
     }
 
     pub fn insert(&mut self, kmer_hash: u64) {
@@ -55,14 +59,18 @@ impl BloomFilter {
         p.powi(self.n_hashes as i32)
     }
 
-    pub fn size_bytes(&self) -> u64 { self.n_bits / 8 }
+    pub fn size_bytes(&self) -> u64 {
+        self.n_bits / 8
+    }
 
     pub fn save(&self, path: &str) -> std::io::Result<()> {
         let mut f = std::fs::File::create(path)?;
         f.write_all(&self.n_bits.to_le_bytes())?;
         f.write_all(&self.n_hashes.to_le_bytes())?;
         f.write_all(&0u32.to_le_bytes())?;
-        for word in &self.bits { f.write_all(&word.to_le_bytes())?; }
+        for word in &self.bits {
+            f.write_all(&word.to_le_bytes())?;
+        }
         Ok(())
     }
 
@@ -82,7 +90,11 @@ impl BloomFilter {
             f.read_exact(&mut buf8)?;
             *word = u64::from_le_bytes(buf8);
         }
-        Ok(Self { bits, n_bits, n_hashes })
+        Ok(Self {
+            bits,
+            n_bits,
+            n_hashes,
+        })
     }
 }
 
@@ -103,7 +115,9 @@ impl CountMinSketch {
         let width = size_bytes / 2 / depth as u64; // u16 = 2 bytes
         log::info!(
             "Count-Min Sketch: {:.1}GB, depth={}, width={}",
-            size_bytes as f64 / 1_073_741_824.0, depth, width
+            size_bytes as f64 / 1_073_741_824.0,
+            depth,
+            width
         );
         Self {
             counters: vec![0u16; (width * depth as u64) as usize],
@@ -160,7 +174,9 @@ impl CountMinSketch {
             1 => kmer.wrapping_mul(0x517CC1B727220A95),
             2 => kmer.wrapping_mul(0x6C62272E07BB0142),
             3 => kmer.wrapping_mul(0xBF58476D1CE4E5B9),
-            _ => kmer.wrapping_mul(0x94D049BB133111EB).wrapping_add(row as u64),
+            _ => kmer
+                .wrapping_mul(0x94D049BB133111EB)
+                .wrapping_add(row as u64),
         };
         let mixed = mixed ^ (mixed >> 33);
         let mixed = mixed.wrapping_mul(0xFF51AFD7ED558CCD);
@@ -190,13 +206,17 @@ fn hash_bytes(data: &[u8]) -> u64 {
 fn canonical_kmer_hash(seq: &[u8]) -> u64 {
     let fwd_hash = hash_bytes(seq);
     // Build reverse complement
-    let rc: Vec<u8> = seq.iter().rev().map(|&b| match b {
-        b'A' | b'a' => b'T',
-        b'T' | b't' => b'A',
-        b'C' | b'c' => b'G',
-        b'G' | b'g' => b'C',
-        _ => b'N',
-    }).collect();
+    let rc: Vec<u8> = seq
+        .iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' | b'a' => b'T',
+            b'T' | b't' => b'A',
+            b'C' | b'c' => b'G',
+            b'G' | b'g' => b'C',
+            _ => b'N',
+        })
+        .collect();
     let rc_hash = hash_bytes(&rc);
     fwd_hash.min(rc_hash)
 }
@@ -214,13 +234,19 @@ where
 
     if k <= 32 {
         // Fast path: 2-bit encoding fits in u64
-        use crate::minimizer::{encode_base, complement_2bit};
-        let mask: u64 = if k < 32 { (1u64 << (2 * k)) - 1 } else { u64::MAX };
+        use crate::minimizer::{complement_2bit, encode_base};
+        let mask: u64 = if k < 32 {
+            (1u64 << (2 * k)) - 1
+        } else {
+            u64::MAX
+        };
 
         while let Some(record) = reader.next() {
             let record = record.map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
             let seq = record.seq();
-            if seq.len() < k { continue; }
+            if seq.len() < k {
+                continue;
+            }
 
             let mut fwd: u64 = 0;
             let mut rev: u64 = 0;
@@ -247,7 +273,9 @@ where
         while let Some(record) = reader.next() {
             let record = record.map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
             let seq = record.seq();
-            if seq.len() < k { continue; }
+            if seq.len() < k {
+                continue;
+            }
 
             // Find runs of valid bases (no N) and extract k-mers from each run
             let mut run_start = 0usize;
@@ -290,15 +318,17 @@ where
     Ok(total_kmers)
 }
 
-
-
 /// Write histogram in ntcard format.
 pub fn write_histogram(hist: &[u64], path: &str) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     writeln!(f, "k\tcount\tfrequency")?;
     for (i, &freq) in hist.iter().enumerate() {
-        if i == 0 { continue; }
-        if freq > 0 { writeln!(f, "\t{}\t{}", i, freq)?; }
+        if i == 0 {
+            continue;
+        }
+        if freq > 0 {
+            writeln!(f, "\t{}\t{}", i, freq)?;
+        }
     }
     Ok(())
 }
@@ -311,9 +341,13 @@ pub fn write_histogram(hist: &[u64], path: &str) -> std::io::Result<()> {
 ///   1. Walk from left until frequency increases (find the error/noise valley)
 ///   2. From that valley, find the maximum (the coverage mode)
 pub fn find_histogram_mode(hist: &[u64]) -> Option<u32> {
-    if hist.len() <= 1 { return None; }
+    if hist.len() <= 1 {
+        return None;
+    }
     let freq_count: Vec<u64> = hist[1..].to_vec();
-    if freq_count.is_empty() { return None; }
+    if freq_count.is_empty() {
+        return None;
+    }
 
     // Find the first local minimum
     let mut min_idx = 0;
@@ -328,9 +362,13 @@ pub fn find_histogram_mode(hist: &[u64]) -> Option<u32> {
 
     // From the minimum, find the maximum (the mode)
     let after_min = &freq_count[min_idx..];
-    if after_min.is_empty() { return None; }
+    if after_min.is_empty() {
+        return None;
+    }
 
-    let max_pos = after_min.iter().enumerate()
+    let max_pos = after_min
+        .iter()
+        .enumerate()
         .max_by_key(|(_, &v)| v)
         .map(|(i, _)| i)?;
 
@@ -361,7 +399,10 @@ pub fn detect_repeats(
 ) -> anyhow::Result<(BloomFilter, Vec<u64>)> {
     log::info!(
         "Detecting repetitive k-mers from {} file(s) (k={}, multiplier={}, {:.1}GB CMS/file)",
-        paths.len(), k, multiplier, cms_size_bytes as f64 / 1_073_741_824.0
+        paths.len(),
+        k,
+        multiplier,
+        cms_size_bytes as f64 / 1_073_741_824.0
     );
 
     let max_hist: u16 = 10000;
@@ -369,7 +410,10 @@ pub fn detect_repeats(
     let cms_depth = 4u32;
 
     // --- Pass 1: Count k-mers + build histogram (parallel across files) ---
-    log::info!("Pass 1: counting k-mers across {} file(s) in parallel...", paths.len());
+    log::info!(
+        "Pass 1: counting k-mers across {} file(s) in parallel...",
+        paths.len()
+    );
 
     let owned_paths: Vec<String> = paths.iter().map(|s| s.to_string()).collect();
 
@@ -398,7 +442,10 @@ pub fn detect_repeats(
         total_kmers += n;
         log::info!("Pass 1 done: {} — {} k-mers", path, n);
     }
-    log::info!("Pass 1 complete: {} total k-mers across all files", total_kmers);
+    log::info!(
+        "Pass 1 complete: {} total k-mers across all files",
+        total_kmers
+    );
 
     // Find mode and threshold
     let mode = find_histogram_mode(&hist)
@@ -406,16 +453,22 @@ pub fn detect_repeats(
     log::info!("K-mer histogram mode: {}", mode);
 
     let threshold = repeat_threshold(mode, multiplier);
-    log::info!("Repeat threshold: {} (mode={} x {})", threshold, mode, multiplier);
+    log::info!(
+        "Repeat threshold: {} (mode={} x {})",
+        threshold,
+        mode,
+        multiplier
+    );
 
     // --- Pass 2: Collect repetitive k-mers into Bloom filter (parallel across files) ---
     log::info!("Pass 2: collecting repetitive k-mers into Bloom filter...");
     let threshold_u16 = threshold.min(u16::MAX as u32) as u16;
 
     // Each thread builds its own BF, then merge via bitwise OR
-    let bf_results: Vec<anyhow::Result<BloomFilter>> =
-        std::thread::scope(|s| {
-            let handles: Vec<_> = owned_paths.iter().map(|path| {
+    let bf_results: Vec<anyhow::Result<BloomFilter>> = std::thread::scope(|s| {
+        let handles: Vec<_> = owned_paths
+            .iter()
+            .map(|path| {
                 let cms_ref = &cms;
                 let bf_size = bloom_size_bytes;
                 s.spawn(move || {
@@ -429,10 +482,11 @@ pub fn detect_repeats(
                     log::info!("Pass 2 done: {}", path);
                     Ok(bf)
                 })
-            }).collect();
+            })
+            .collect();
 
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
 
     // Merge BFs via bitwise OR
     let mut final_bf = BloomFilter::new(bloom_size_bytes, 1);
@@ -445,7 +499,9 @@ pub fn detect_repeats(
 
     log::info!(
         "Repeat BF: popcount={}, size={} bytes, FPR={:.4}%",
-        final_bf.popcount(), final_bf.size_bytes(), final_bf.fpr() * 100.0
+        final_bf.popcount(),
+        final_bf.size_bytes(),
+        final_bf.fpr() * 100.0
     );
 
     drop(cms);
@@ -500,7 +556,9 @@ mod tests {
     #[test]
     fn test_cms_basic() {
         let mut cms = CountMinSketch::new(1_000_000, 4);
-        for _ in 0..50 { cms.insert(42); }
+        for _ in 0..50 {
+            cms.insert(42);
+        }
         let est = cms.query(42);
         assert!(est >= 50, "Expected >= 50, got {}", est);
         assert!(est < 60, "Estimate too high: {}", est);
@@ -511,8 +569,12 @@ mod tests {
     #[test]
     fn test_cms_multiple_kmers() {
         let mut cms = CountMinSketch::new(1_000_000, 4);
-        for _ in 0..100 { cms.insert(1); }
-        for _ in 0..10 { cms.insert(2); }
+        for _ in 0..100 {
+            cms.insert(1);
+        }
+        for _ in 0..10 {
+            cms.insert(2);
+        }
         cms.insert(3);
         assert!(cms.query(1) >= 100);
         assert!(cms.query(2) >= 10);

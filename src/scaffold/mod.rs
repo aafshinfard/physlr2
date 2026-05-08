@@ -193,7 +193,11 @@ mod tests {
         let mut contigs = FxHashMap::default();
         contigs.insert("ctg1".to_string(), b"ACGTACGT".to_vec());
         let paths = vec![vec![("ctg1".to_string(), '+')]];
-        let config = ScaffoldConfig { gap_size: 5, min_score: 0, min_length: 0 };
+        let config = ScaffoldConfig {
+            gap_size: 5,
+            min_score: 0,
+            min_length: 0,
+        };
         let result = scaffold_assembly(&contigs, &paths, &config);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].1, b"ACGTACGT");
@@ -205,7 +209,11 @@ mod tests {
         contigs.insert("a".to_string(), b"AAAA".to_vec());
         contigs.insert("b".to_string(), b"CCCC".to_vec());
         let paths = vec![vec![("a".to_string(), '+'), ("b".to_string(), '+')]];
-        let config = ScaffoldConfig { gap_size: 3, min_score: 0, min_length: 0 };
+        let config = ScaffoldConfig {
+            gap_size: 3,
+            min_score: 0,
+            min_length: 0,
+        };
         let result = scaffold_assembly(&contigs, &paths, &config);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].1, b"AAAANNNCCCC");
@@ -216,7 +224,11 @@ mod tests {
         let mut contigs = FxHashMap::default();
         contigs.insert("a".to_string(), b"AACG".to_vec());
         let paths = vec![vec![("a".to_string(), '-')]];
-        let config = ScaffoldConfig { gap_size: 3, min_score: 0, min_length: 0 };
+        let config = ScaffoldConfig {
+            gap_size: 3,
+            min_score: 0,
+            min_length: 0,
+        };
         let result = scaffold_assembly(&contigs, &paths, &config);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].1, reverse_complement(b"AACG"));

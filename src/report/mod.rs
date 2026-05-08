@@ -329,7 +329,10 @@ mod tests {
         let mut buf = Vec::new();
         backbone_to_dot(&paths, &mut buf).unwrap();
         let dot = String::from_utf8(buf).unwrap();
-        assert!(dot.contains("graph backbone"), "Expected 'graph backbone' in DOT output");
+        assert!(
+            dot.contains("graph backbone"),
+            "Expected 'graph backbone' in DOT output"
+        );
         assert!(dot.contains("a"), "Expected node 'a' in DOT output");
         assert!(dot.contains("--"), "Expected '--' edges in DOT output");
     }

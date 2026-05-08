@@ -61,10 +61,7 @@ fn determine_pruned_mst(
 ///   2. Remove junctions, find connected components
 ///   3. Bridges = short paths where all nodes have degree 2 in the MST
 ///   4. Also include edges between junctions
-fn identify_bridges(
-    mst: &OverlapGraph,
-    bridge_length: usize,
-) -> Vec<Vec<NodeIndex>> {
+fn identify_bridges(mst: &OverlapGraph, bridge_length: usize) -> Vec<Vec<NodeIndex>> {
     // Find junctions
     let junctions: FxHashSet<NodeIndex> = mst
         .node_indices()
@@ -124,11 +121,7 @@ fn identify_bridges(
 ///     bridges = identify_bridges(gmst, bridge_length)
 ///     if no bridges: break
 ///     g.remove_nodes_from(bridge_nodes)
-fn remove_bridges(
-    graph: &mut OverlapGraph,
-    bridge_length: usize,
-    prune_branch_size: usize,
-) {
+fn remove_bridges(graph: &mut OverlapGraph, bridge_length: usize, prune_branch_size: usize) {
     let mut iterations = 0;
     let mut total_removed = 0;
 
@@ -195,7 +188,11 @@ pub fn extract_named_backbones(g: &NamedGraph, config: &BackboneConfig) -> Vec<V
 
     // Step 1: Remove bridges iteratively
     if config.prune_bridge_size > 0 {
-        remove_bridges(&mut work_graph, config.prune_bridge_size, config.prune_branch_size);
+        remove_bridges(
+            &mut work_graph,
+            config.prune_bridge_size,
+            config.prune_branch_size,
+        );
     }
 
     // Step 2: Compute pruned MST
@@ -353,7 +350,10 @@ fn merge_adjacent_named_paths(
         return result;
     }
 
-    log::info!("Found {} merge candidates between path endpoints", merge_edges.len());
+    log::info!(
+        "Found {} merge candidates between path endpoints",
+        merge_edges.len()
+    );
 
     // Union-find to group paths
     let n = paths.len();
@@ -368,9 +368,7 @@ fn merge_adjacent_named_paths(
     }
 
     // Prefer merging larger paths first
-    merge_edges.sort_by_key(|&(a, b, _, _)| {
-        std::cmp::Reverse(paths[a].len().min(paths[b].len()))
-    });
+    merge_edges.sort_by_key(|&(a, b, _, _)| std::cmp::Reverse(paths[a].len().min(paths[b].len())));
 
     for (a, b, a_is_last, b_is_last) in merge_edges {
         let ra = find(&mut parent, a);
@@ -389,7 +387,7 @@ fn merge_adjacent_named_paths(
     }
 
     let mut result: Vec<Vec<String>> = Vec::new();
-    for (_root, group) in &groups {
+    for group in groups.values() {
         if group.len() == 1 {
             result.push(paths[group[0]].clone());
             continue;
@@ -407,7 +405,9 @@ fn merge_adjacent_named_paths(
         }
 
         // Start from a path with degree ≤ 1 in the path adjacency graph
-        let start = group.iter().copied()
+        let start = group
+            .iter()
+            .copied()
             .find(|&p| path_adj.get(&p).map_or(0, |v| v.len()) <= 1)
             .unwrap_or(group[0]);
 
@@ -424,9 +424,13 @@ fn merge_adjacent_named_paths(
             }
             chain.extend(p);
 
-            let next = path_adj.get(&current).and_then(|adjs| {
-                adjs.iter().find(|(other, _, _)| !visited_paths.contains(other))
-            }).copied();
+            let next = path_adj
+                .get(&current)
+                .and_then(|adjs| {
+                    adjs.iter()
+                        .find(|(other, _, _)| !visited_paths.contains(other))
+                })
+                .copied();
 
             match next {
                 Some((next_path, _my_is_last, other_is_last)) => {
@@ -592,7 +596,6 @@ fn split_at_junctions(
 /// chromosome and can be merged.
 ///
 /// This is an optional post-processing step for the physical map.
-
 /// Configuration for path merging.
 #[derive(Debug, Clone)]
 pub struct MergePathsConfig {
@@ -685,15 +688,25 @@ pub fn merge_paths(
     for (i, path) in paths.iter().enumerate() {
         let depth = config.endpoint_depth.min(path.len());
         for mol in &path[..depth] {
-            let ep = Endpoint { path_idx: i, is_end: false };
+            let ep = Endpoint {
+                path_idx: i,
+                is_end: false,
+            };
             endpoint_info.insert(mol.as_str(), ep);
             endpoint_mol_ids.insert(mol.as_str(), next_mol_id);
             endpoint_mol_to_ep.push(ep);
             next_mol_id += 1;
         }
-        let start = if path.len() > depth { path.len() - depth } else { 0 };
+        let start = if path.len() > depth {
+            path.len() - depth
+        } else {
+            0
+        };
         for mol in &path[start..] {
-            let ep = Endpoint { path_idx: i, is_end: true };
+            let ep = Endpoint {
+                path_idx: i,
+                is_end: true,
+            };
             endpoint_info.insert(mol.as_str(), ep);
             endpoint_mol_ids.insert(mol.as_str(), next_mol_id);
             endpoint_mol_to_ep.push(ep);
@@ -768,8 +781,7 @@ pub fn merge_paths(
             .collect();
 
         // Check specificity: how many different paths does this molecule connect to?
-        let connected_paths: FxHashSet<usize> =
-            strong_eps.iter().map(|ep| ep.path_idx).collect();
+        let connected_paths: FxHashSet<usize> = strong_eps.iter().map(|ep| ep.path_idx).collect();
 
         if connected_paths.len() < 2 || connected_paths.len() > config.max_path_connections {
             scanned += 1;
@@ -832,7 +844,7 @@ pub fn merge_paths(
         .collect();
 
     // Sort by bridge count descending (strongest evidence first)
-    links.sort_by(|a, b| b.bridge_count.cmp(&a.bridge_count));
+    links.sort_by_key(|l| std::cmp::Reverse(l.bridge_count));
 
     log::info!(
         "Found {} merge links (min_bridges={}, min_path_size={}, min_density={:.3}, min_ep_hits={})",
@@ -976,7 +988,8 @@ pub fn merge_paths(
         loop {
             // If chain_start has a start-join, the previous path connects here
             if let Some(&(prev_path, _prev_is_end)) = join_at_start.get(&chain_start) {
-                if !visited_backward.contains(&prev_path) && !used_in_scaffold.contains(&prev_path) {
+                if !visited_backward.contains(&prev_path) && !used_in_scaffold.contains(&prev_path)
+                {
                     visited_backward.insert(prev_path);
                     chain_start = prev_path;
                     continue;
@@ -1012,7 +1025,8 @@ pub fn merge_paths(
                 }
                 // Exit from the start — check start join
                 if let Some(&(next_path, next_is_end)) = join_at_start.get(&current) {
-                    if !chain_visited.contains(&next_path) && !used_in_scaffold.contains(&next_path) {
+                    if !chain_visited.contains(&next_path) && !used_in_scaffold.contains(&next_path)
+                    {
                         entering_from_end = next_is_end;
                         current = next_path;
                         continue;
@@ -1023,7 +1037,8 @@ pub fn merge_paths(
                 merged.extend(path_mols.iter().cloned());
                 // Exit from the end — check end join
                 if let Some(&(next_path, next_is_end)) = join_at_end.get(&current) {
-                    if !chain_visited.contains(&next_path) && !used_in_scaffold.contains(&next_path) {
+                    if !chain_visited.contains(&next_path) && !used_in_scaffold.contains(&next_path)
+                    {
                         entering_from_end = next_is_end;
                         current = next_path;
                         continue;
@@ -1045,7 +1060,7 @@ pub fn merge_paths(
     }
 
     // Sort by length descending
-    merged_paths.sort_by(|a, b| b.len().cmp(&a.len()));
+    merged_paths.sort_by_key(|p| std::cmp::Reverse(p.len()));
 
     let total_mols: usize = merged_paths.iter().map(|p| p.len()).sum();
     log::info!(
@@ -1060,18 +1075,6 @@ pub fn merge_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_mxs(data: &[(&str, &[u64])]) -> FxHashMap<String, FxHashSet<u64>> {
-        data.iter()
-            .map(|(name, mxs)| {
-                (
-                    name.to_string(),
-                    mxs.iter().copied().collect::<FxHashSet<u64>>(),
-                )
-            })
-            .collect()
-    }
-
     #[test]
     fn test_scaffold_empty() {
         let paths: Vec<Vec<String>> = Vec::new();
