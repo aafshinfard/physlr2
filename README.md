@@ -111,41 +111,38 @@ physlr --help
 
 ### One-command physical map
 
-Build a physical map from linked reads:
+Build a physical map directly from linked-read FASTQ files:
 
 ```bash
-# Index minimizers from linked reads (FASTQ with barcodes)
-physlr index reads.fq.gz -o reads.mxs.tsv
-
-# Build the physical map
-physlr physical-map reads.mxs.tsv -o output/ -p mygenome
+physlr physical-map reads.R1.fq.gz reads.R2.fq.gz -o output/ -p mygenome
 ```
+
+This runs the full pipeline (indexing, filtering, overlap, molecule separation, backbone extraction) and produces the physical map in `output/`.
 
 To also run the optional **merge-paths** step, which uses bridge molecules to merge adjacent backbone paths and improve contiguity:
 
 ```bash
-physlr physical-map reads.mxs.tsv -o output/ -p mygenome --merge-paths
+physlr physical-map reads.R1.fq.gz reads.R2.fq.gz -o output/ -p mygenome --merge-paths
 ```
 
-### One-command scaffolding
+### Scaffolding
 
-Scaffold a draft assembly using the physical map:
+Scaffold a draft assembly using the physical map output:
 
 ```bash
-# Index minimizers from linked reads
-physlr index reads.fq.gz -o reads.mxs.tsv
-
-# Index minimizers from the draft assembly
-physlr index-contigs draft.fa -o draft.mxs.tsv
-
-# Scaffold
-physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome
+physlr scaffolds output/mygenome.backbone.path output/mygenome.filtered.tsv draft.fa -o output/ -p mygenome
 ```
 
-To include NG50 in the output metrics (optional), add the expected genome size:
+The scaffolds command takes three positional arguments:
+1. The backbone path file produced by `physical-map`
+2. The filtered minimizer TSV produced by `physical-map`
+3. The draft assembly FASTA to scaffold
+
+To include NG50 in the output metrics, add the expected genome size (optional):
 
 ```bash
-physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome -g 3088269832
+physlr scaffolds output/mygenome.backbone.path output/mygenome.filtered.tsv draft.fa \
+  -o output/ -p mygenome -g 3088269832
 ```
 
 ### Step-by-step CLI

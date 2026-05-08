@@ -367,16 +367,23 @@ enum Commands {
         output: String,
     },
 
-    /// Run the full physical map pipeline
+    /// Run the full physical map pipeline from linked-read FASTQ files
     PhysicalMap {
-        /// Input minimizer TSV file
-        minimizers: String,
+        /// Input linked-read FASTQ file(s) (may be gzipped)
+        #[arg(required = true)]
+        input: Vec<String>,
         /// Output directory
         #[arg(short, long, default_value = ".")]
         outdir: String,
         /// Output prefix
         #[arg(short, long, default_value = "physlr")]
         prefix: String,
+        /// K-mer size for minimizer extraction
+        #[arg(short, long, default_value_t = 32)]
+        k: usize,
+        /// Window size for minimizer extraction
+        #[arg(short, long, default_value_t = 32)]
+        w: usize,
         /// Minimum minimizers per barcode
         #[arg(long, default_value_t = 100)]
         min_bx_count: usize,
@@ -397,39 +404,33 @@ enum Commands {
         min_path_size: usize,
     },
 
-    /// Run the full scaffolding pipeline
+    /// Scaffold a draft assembly using a physical map produced by `physical-map`
     Scaffolds {
-        /// Input minimizer TSV file (linked reads)
-        minimizers: String,
-        /// Draft assembly FASTA
+        /// Backbone path file (from physical-map output, e.g. physlr.backbone.path)
+        path_file: String,
+        /// Filtered minimizer TSV (from physical-map output, e.g. physlr.filtered.tsv)
+        filtered_mxs: String,
+        /// Draft assembly FASTA to scaffold
         draft: String,
-        /// Draft assembly minimizer TSV
-        draft_minimizers: String,
         /// Output directory
         #[arg(short, long, default_value = ".")]
         outdir: String,
         /// Output prefix
         #[arg(short, long, default_value = "physlr")]
         prefix: String,
-        /// Minimum minimizers per barcode
-        #[arg(long, default_value_t = 100)]
-        min_bx_count: usize,
-        /// Maximum minimizers per barcode
-        #[arg(long, default_value_t = 5000)]
-        max_bx_count: usize,
-        /// Minimum shared minimizers for overlap
-        #[arg(long, default_value_t = 10)]
-        min_overlap: u32,
-        /// Edge filter percentile
-        #[arg(long, default_value_t = 90.0)]
-        edge_percentile: f64,
+        /// K-mer size (must match the value used in physical-map)
+        #[arg(short, long, default_value_t = 32)]
+        k: usize,
+        /// Window size (must match the value used in physical-map)
+        #[arg(short, long, default_value_t = 32)]
+        w: usize,
         /// Minimum mapping score
         #[arg(long, default_value_t = 10)]
         min_map_score: u32,
-        /// Gap size in scaffolds
+        /// Gap size in scaffolds (Ns between contigs)
         #[arg(long, default_value_t = 100)]
         gap_size: usize,
-        /// Expected genome size (for NG50 reporting)
+        /// Expected genome size in bp (optional, for NG50 reporting only)
         #[arg(short = 'g', long)]
         genome_size: Option<u64>,
     },
@@ -1002,9 +1003,11 @@ fn main() -> Result<()> {
         }
 
         Commands::PhysicalMap {
-            minimizers,
+            input,
             outdir,
             prefix,
+            k,
+            w,
             min_bx_count,
             max_bx_count,
             min_overlap,
@@ -1014,9 +1017,26 @@ fn main() -> Result<()> {
         } => {
             std::fs::create_dir_all(&outdir)?;
 
-            timer.log("Step 1: Filtering minimizers...");
-            let mut bx_to_mxs = physlr::io::read_minimizers(&minimizers)?;
-            timer.log(&format!("Read {} barcodes", bx_to_mxs.len()));
+            timer.log(&format!(
+                "Step 1: Indexing minimizers from {} file(s) (k={}, w={})...",
+                input.len(),
+                k,
+                w
+            ));
+            let mut bx_to_mxs = rustc_hash::FxHashMap::default();
+            for file in &input {
+                timer.log(&format!("  Processing {}", file));
+                let file_mxs = physlr::minimizer::index_file(file, k, w)?;
+                for (bx, mxs) in file_mxs {
+                    bx_to_mxs
+                        .entry(bx)
+                        .or_insert_with(rustc_hash::FxHashSet::default)
+                        .extend(mxs);
+                }
+            }
+            timer.log(&format!("Indexed {} barcodes", bx_to_mxs.len()));
+
+            timer.log("Step 2: Filtering minimizers...");
 
             physlr::minimizer::remove_singletons(&mut bx_to_mxs);
             physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
@@ -1085,47 +1105,31 @@ fn main() -> Result<()> {
         }
 
         Commands::Scaffolds {
-            minimizers,
+            path_file,
+            filtered_mxs,
             draft,
-            draft_minimizers,
             outdir,
             prefix,
-            min_bx_count,
-            max_bx_count,
-            min_overlap,
-            edge_percentile,
+            k,
+            w,
             min_map_score,
             gap_size,
             genome_size,
         } => {
             std::fs::create_dir_all(&outdir)?;
 
-            timer.log("Building physical map...");
-            let mut bx_to_mxs = physlr::io::read_minimizers(&minimizers)?;
-            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
-            physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
-            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
-            physlr::minimizer::remove_repetitive(&mut bx_to_mxs, None);
+            timer.log("Loading physical map...");
+            let backbones = physlr::io::read_paths(&path_file)?;
+            timer.log(&format!("Read {} backbone paths", backbones.len()));
 
-            let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
-            physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
+            let bx_to_mxs = physlr::io::read_minimizers(&filtered_mxs)?;
+            timer.log(&format!("Read {} filtered barcodes", bx_to_mxs.len()));
 
-            let mol_g = physlr::molecules::separate_molecules(
-                &g,
-                "bc+cc",
-                &rustc_hash::FxHashSet::default(),
-            );
-
-            let config = BackboneConfig::default();
-            let backbones = physlr::backbone::extract_named_backbones(&mol_g, &config);
-
-            let backbone_path = format!("{}/{}.backbone.path", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&backbone_path)?;
-            physlr::io::write_paths(&backbones, &mut *writer)?;
-            drop(writer);
+            timer.log("Indexing draft assembly contigs...");
+            let query_mxs = physlr::minimizer::index_file_ordered(&draft, k, w)?;
+            timer.log(&format!("Indexed {} contigs", query_mxs.len()));
 
             timer.log("Mapping draft assembly to physical map...");
-            let query_mxs = physlr::io::read_minimizers_list(&draft_minimizers)?;
             let mx_to_pos = physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
             let mappings = physlr::map::map_to_backbone(&query_mxs, &mx_to_pos, min_map_score);
 
