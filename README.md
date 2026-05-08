@@ -116,7 +116,7 @@ Physlr provides three main commands, from most automated to most granular:
 Build a physical map and scaffold a draft assembly in one command:
 
 ```bash
-physlr pipeline reads.R1.fq.gz reads.R2.fq.gz --draft draft.fa -o output/ -p mygenome
+physlr pipeline reads.fq.gz --draft draft.fa -o output/ -p mygenome
 ```
 
 This takes raw linked-read FASTQ files and a draft assembly, and produces:
@@ -128,7 +128,7 @@ This takes raw linked-read FASTQ files and a draft assembly, and produces:
 To include NG50 in the metrics, add the expected genome size (optional):
 
 ```bash
-physlr pipeline reads.R1.fq.gz reads.R2.fq.gz --draft draft.fa -o output/ -g 3088269832
+physlr pipeline reads.fq.gz --draft draft.fa -o output/ -g 3088269832
 ```
 
 ### `physlr physical-map` — Physical map only
@@ -136,7 +136,7 @@ physlr pipeline reads.R1.fq.gz reads.R2.fq.gz --draft draft.fa -o output/ -g 308
 Build a physical map from linked-read FASTQ files without scaffolding:
 
 ```bash
-physlr physical-map reads.R1.fq.gz reads.R2.fq.gz -o output/ -p mygenome
+physlr physical-map reads.fq.gz -o output/ -p mygenome
 ```
 
 This runs the full physical map pipeline (indexing, filtering, overlap, molecule separation, backbone extraction) and produces the physical map files in `output/`.
