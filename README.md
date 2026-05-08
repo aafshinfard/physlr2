@@ -44,8 +44,8 @@ Backbone paths mapped to the GRCh38 reference genome for two human cell lines:
 
 | | NA12878 (stLFR) | NA24143 (stLFR) |
 |:---|:---:|:---:|
-| **Backbone** | [<img src="results/na12878_backbone.png" width="300">](results/na12878_backbone.png) | [<img src="results/na24143_backbone.png" width="300">](results/na24143_backbone.png) |
-| **Reference** | [<img src="results/na12878_reference.png" width="300">](results/na12878_reference.png) | [<img src="results/na24143_reference.png" width="300">](results/na24143_reference.png) |
+| **Backbone** | [<img src="results/na12878_backbone_v023.png" width="300">](results/na12878_backbone_v023.png) | [<img src="results/na24143_backbone_v023.png" width="300">](results/na24143_backbone_v023.png) |
+| **Reference** | [<img src="results/na12878_reference_v023.png" width="300">](results/na12878_reference_v023.png) | [<img src="results/na24143_reference_v023.png" width="300">](results/na24143_reference_v023.png) |
 
 *Backbone: paths colored by reference chromosome. Reference: chromosomes colored by backbone path. Click to enlarge.*
 

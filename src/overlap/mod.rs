@@ -148,10 +148,7 @@ mod tests {
 
     #[test]
     fn test_compute_overlap_min_m() {
-        let bx = make_bx_map(&[
-            ("a", &[1, 2, 3]),
-            ("b", &[2, 3, 4]),
-        ]);
+        let bx = make_bx_map(&[("a", &[1, 2, 3]), ("b", &[2, 3, 4])]);
         // min_m=3: a and b share {2,3} = 2 < 3 → no edge
         let g = compute_overlap(&bx, 3);
         assert_eq!(g.num_edges(), 0);
@@ -171,10 +168,7 @@ mod tests {
 
     #[test]
     fn test_compute_overlap_no_shared() {
-        let bx = make_bx_map(&[
-            ("a", &[1, 2]),
-            ("b", &[3, 4]),
-        ]);
+        let bx = make_bx_map(&[("a", &[1, 2]), ("b", &[3, 4])]);
         let g = compute_overlap(&bx, 1);
         assert_eq!(g.num_edges(), 0);
     }
@@ -202,10 +196,7 @@ mod tests {
 
     #[test]
     fn test_filter_edges_zero_percentile() {
-        let bx = make_bx_map(&[
-            ("a", &[1, 2, 3]),
-            ("b", &[1, 2, 3]),
-        ]);
+        let bx = make_bx_map(&[("a", &[1, 2, 3]), ("b", &[1, 2, 3])]);
         let mut g = compute_overlap(&bx, 1);
         let removed = filter_edges_by_percentile(&mut g, 0.0);
         assert_eq!(removed, 0);

@@ -222,13 +222,17 @@ fn hash_kmer_bytes(data: &[u8]) -> u64 {
 #[inline]
 fn canonical_kmer_hash_bytes(seq: &[u8]) -> u64 {
     let fwd = hash_kmer_bytes(seq);
-    let rc: Vec<u8> = seq.iter().rev().map(|&b| match b {
-        b'A' | b'a' => b'T',
-        b'T' | b't' => b'A',
-        b'C' | b'c' => b'G',
-        b'G' | b'g' => b'C',
-        _ => b'N',
-    }).collect();
+    let rc: Vec<u8> = seq
+        .iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' | b'a' => b'T',
+            b'T' | b't' => b'A',
+            b'C' | b'c' => b'G',
+            b'G' | b'g' => b'C',
+            _ => b'N',
+        })
+        .collect();
     let rc_hash = hash_kmer_bytes(&rc);
     fwd.min(rc_hash)
 }
@@ -243,7 +247,11 @@ fn kmer_hashes(seq: &[u8], k: usize) -> Vec<(usize, u64)> {
 
     if k <= 32 {
         // Fast path: 2-bit encoding
-        let mask = if k == 32 { u64::MAX } else { (1u64 << (2 * k)) - 1 };
+        let mask = if k == 32 {
+            u64::MAX
+        } else {
+            (1u64 << (2 * k)) - 1
+        };
         let mut hashes = Vec::with_capacity(seq.len() - k + 1);
         let mut fwd: u64 = 0;
         let mut rev: u64 = 0;
@@ -274,7 +282,10 @@ fn kmer_hashes(seq: &[u8], k: usize) -> Vec<(usize, u64)> {
         for (i, &base) in seq.iter().enumerate() {
             let valid = matches!(base, b'A' | b'a' | b'C' | b'c' | b'G' | b'g' | b'T' | b't');
             if valid {
-                if !in_run { run_start = i; in_run = true; }
+                if !in_run {
+                    run_start = i;
+                    in_run = true;
+                }
             } else {
                 if in_run {
                     let run = &seq[run_start..i];
@@ -504,18 +515,17 @@ pub fn index_file_btllib(
     threads: usize,
 ) -> anyhow::Result<FxHashMap<String, FxHashSet<u64>>> {
     // Verify indexlr is available
-    let which = std::process::Command::new("which")
-        .arg("indexlr")
-        .output();
+    let which = std::process::Command::new("which").arg("indexlr").output();
     if which.is_err() || !which.unwrap().status.success() {
-        anyhow::bail!(
-            "btllib indexlr not found in PATH. Install btllib or use --indexer builtin."
-        );
+        anyhow::bail!("btllib indexlr not found in PATH. Install btllib or use --indexer builtin.");
     }
 
     log::info!(
         "Running btllib indexlr (k={}, w={}, threads={}) on {}",
-        k, w, threads, path
+        k,
+        w,
+        threads,
+        path
     );
 
     let child = std::process::Command::new("indexlr")
@@ -570,7 +580,8 @@ pub fn index_file_btllib(
         if n_lines.is_multiple_of(1_000_000) {
             log::info!(
                 "Parsed {} lines from indexlr, {} barcodes",
-                n_lines, bx_to_mxs.len()
+                n_lines,
+                bx_to_mxs.len()
             );
         }
     }
@@ -580,7 +591,8 @@ pub fn index_file_btllib(
 
     log::info!(
         "btllib indexlr: parsed {} lines into {} barcodes",
-        n_lines, bx_to_mxs.len()
+        n_lines,
+        bx_to_mxs.len()
     );
 
     Ok(bx_to_mxs)
@@ -602,7 +614,11 @@ fn kmer_hashes_filtered(
     }
 
     if k <= 32 {
-        let mask: u64 = if k < 32 { (1u64 << (2 * k)) - 1 } else { u64::MAX };
+        let mask: u64 = if k < 32 {
+            (1u64 << (2 * k)) - 1
+        } else {
+            u64::MAX
+        };
         let mut fwd: u64 = 0;
         let mut rev: u64 = 0;
         let mut valid = 0usize;
@@ -615,7 +631,9 @@ fn kmer_hashes_filtered(
                 valid += 1;
                 if valid >= k {
                     let canonical = fwd.min(rev);
-                    if repeat_bf.contains(canonical) { continue; }
+                    if repeat_bf.contains(canonical) {
+                        continue;
+                    }
                     result.push((i + 1 - k, hash_kmer(canonical)));
                 }
             } else {
@@ -634,14 +652,19 @@ fn kmer_hashes_filtered(
         for (i, &base) in seq.iter().enumerate() {
             let valid = matches!(base, b'A' | b'a' | b'C' | b'c' | b'G' | b'g' | b'T' | b't');
             if valid {
-                if !in_run { run_start = i; in_run = true; }
+                if !in_run {
+                    run_start = i;
+                    in_run = true;
+                }
             } else {
                 if in_run {
                     let run = &seq[run_start..i];
                     if run.len() >= k {
                         for j in 0..=(run.len() - k) {
                             let canonical = canonical_kmer_hash_bytes(&run[j..j + k]);
-                            if repeat_bf.contains(canonical) { continue; }
+                            if repeat_bf.contains(canonical) {
+                                continue;
+                            }
                             result.push((run_start + j, hash_kmer(canonical)));
                         }
                     }
@@ -654,7 +677,9 @@ fn kmer_hashes_filtered(
             if run.len() >= k {
                 for j in 0..=(run.len() - k) {
                     let canonical = canonical_kmer_hash_bytes(&run[j..j + k]);
-                    if repeat_bf.contains(canonical) { continue; }
+                    if repeat_bf.contains(canonical) {
+                        continue;
+                    }
                     result.push((run_start + j, hash_kmer(canonical)));
                 }
             }
@@ -708,7 +733,9 @@ pub fn index_file_with_repeat_filter(
 ) -> anyhow::Result<FxHashMap<String, FxHashSet<u64>>> {
     log::info!(
         "Indexing minimizers from {} (k={}, w={}) with repeat filter...",
-        path, k, w
+        path,
+        k,
+        w
     );
 
     let mut bx_to_mxs: FxHashMap<String, FxHashSet<u64>> = FxHashMap::default();
@@ -745,14 +772,18 @@ pub fn index_file_with_repeat_filter(
         if n_reads.is_multiple_of(1_000_000) {
             log::info!(
                 "Processed {} reads, {} barcodes ({} minimizers)",
-                n_reads, bx_to_mxs.len(), n_minimizers
+                n_reads,
+                bx_to_mxs.len(),
+                n_minimizers
             );
         }
     }
 
     log::info!(
         "Indexed {} reads into {} barcodes: {} minimizers (repetitive k-mers filtered)",
-        n_reads, bx_to_mxs.len(), n_minimizers
+        n_reads,
+        bx_to_mxs.len(),
+        n_minimizers
     );
 
     Ok(bx_to_mxs)
@@ -911,7 +942,7 @@ mod tests {
         bx.insert("c".into(), (1..=100).collect());
 
         let (too_few, too_many) = filter_barcodes(&mut bx, 2, 50);
-        assert_eq!(too_few, 1);  // "b" removed
+        assert_eq!(too_few, 1); // "b" removed
         assert_eq!(too_many, 1); // "c" removed
         assert_eq!(bx.len(), 1); // only "a" remains
     }

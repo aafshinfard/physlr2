@@ -206,13 +206,9 @@ pub fn map_to_backbone(
 ///   4. orientation = most_common orientation; if tied, "."
 ///   5. Sort by (tname, tstart)
 ///   6. Group consecutive same-tname entries into scaffold paths
-pub fn bed_to_scaffold_paths(
-    mappings: &[Mapping],
-    min_score: u32,
-) -> Vec<Vec<(String, char)>> {
+pub fn bed_to_scaffold_paths(mappings: &[Mapping], min_score: u32) -> Vec<Vec<(String, char)>> {
     // Step 1: Group by qname -> {tname -> [(tstart, orientation)]}
-    let mut qnames: FxHashMap<String, FxHashMap<usize, Vec<(usize, char)>>> =
-        FxHashMap::default();
+    let mut qnames: FxHashMap<String, FxHashMap<usize, Vec<(usize, char)>>> = FxHashMap::default();
     for m in mappings {
         if m.score < min_score {
             continue;
@@ -308,10 +304,18 @@ impl PafRecord {
         writeln!(
             w,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.qname, self.qlength, self.qstart, self.qend,
+            self.qname,
+            self.qlength,
+            self.qstart,
+            self.qend,
             self.orientation,
-            self.tname, self.tlength, self.tstart, self.tend,
-            self.score, self.length, self.mapq
+            self.tname,
+            self.tlength,
+            self.tstart,
+            self.tend,
+            self.score,
+            self.length,
+            self.mapq
         )
     }
 }
@@ -324,10 +328,13 @@ fn quantile(probs: &[f64], data: &[usize]) -> Vec<usize> {
     let mut sorted = data.to_vec();
     sorted.sort_unstable();
     let n = sorted.len();
-    probs.iter().map(|&p| {
-        let idx = ((p * (n as f64 - 1.0)).round() as usize).min(n - 1);
-        sorted[idx]
-    }).collect()
+    probs
+        .iter()
+        .map(|&p| {
+            let idx = ((p * (n as f64 - 1.0)).round() as usize).min(n - 1);
+            sorted[idx]
+        })
+        .collect()
 }
 
 /// Map query sequences to backbone paths, output PAF records.
@@ -356,7 +363,7 @@ pub fn map_paf(
             FxHashMap::default();
         for (&tidpos, qpos_list) in &tidpos_to_qpos {
             let q = quantile(&[0.0, 0.25, 0.5, 0.75, 1.0], qpos_list);
-            let iqr = if q[3] > q[1] { q[3] - q[1] } else { 0 };
+            let iqr = q[3].saturating_sub(q[1]);
             let wr = (coef * iqr as f64) as usize;
             let low = q[0].max(q[1].saturating_sub(wr));
             let high = q[4].min(q[3] + wr);
@@ -379,7 +386,9 @@ pub fn map_paf(
             if score >= min_score {
                 mapped = true;
                 let (qstart, _qmed, qend) = tidpos_bounds[&(tid, tpos)];
-                let qmed_before = tidpos_bounds.get(&(tid, tpos.wrapping_sub(1))).map(|b| b.1 as i64);
+                let qmed_before = tidpos_bounds
+                    .get(&(tid, tpos.wrapping_sub(1)))
+                    .map(|b| b.1 as i64);
                 let qmed = Some(tidpos_bounds[&(tid, tpos)].1 as i64);
                 let qmed_after = tidpos_bounds.get(&(tid, tpos + 1)).map(|b| b.1 as i64);
                 let orientation = determine_orientation(qmed_before, qmed, qmed_after);
@@ -388,16 +397,31 @@ pub fn map_paf(
                 let mapq = (100 * score as usize / length).min(255) as u32;
 
                 records.push(PafRecord {
-                    qname: qname.clone(), qlength, qstart, qend, orientation,
-                    tname: format!("{}", tid), tlength, tstart: tpos, tend: tpos + 1,
-                    score, length, mapq,
+                    qname: qname.clone(),
+                    qlength,
+                    qstart,
+                    qend,
+                    orientation,
+                    tname: format!("{}", tid),
+                    tlength,
+                    tstart: tpos,
+                    tend: tpos + 1,
+                    score,
+                    length,
+                    mapq,
                 });
             }
         }
-        if mapped { num_mapped += 1; }
+        if mapped {
+            num_mapped += 1;
+        }
     }
 
-    log::info!("Mapped {} of {} query sequences to backbone", num_mapped, query_mxs.len());
+    log::info!(
+        "Mapped {} of {} query sequences to backbone",
+        num_mapped,
+        query_mxs.len()
+    );
     records
 }
 
@@ -409,9 +433,13 @@ pub fn read_backbone_paths(path: &str) -> anyhow::Result<Vec<Vec<String>>> {
     for line in reader.lines() {
         let line = line?;
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let nodes: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
-        if !nodes.is_empty() { paths.push(nodes); }
+        if !nodes.is_empty() {
+            paths.push(nodes);
+        }
     }
     log::info!("Read {} backbone paths from {}", paths.len(), path);
     Ok(paths)
@@ -426,9 +454,10 @@ pub fn filter_paf_top_n(records: &[PafRecord], n: usize) -> Vec<usize> {
     let mut scored: Vec<(&str, u32)> = path_scores.into_iter().collect();
     scored.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
     let top: FxHashSet<&str> = scored.iter().take(n).map(|&(name, _)| name).collect();
-    records.iter().enumerate()
+    records
+        .iter()
+        .enumerate()
         .filter(|(_, r)| top.contains(r.tname.as_str()))
         .map(|(i, _)| i)
         .collect()
 }
-
