@@ -6,7 +6,7 @@
   <img src="physlr2-logo.png" alt="Physlr 2 logo" width="360">
 </p>
 
-# Physlr: Next-generation Physical Maps
+# Physlr2: Next-generation Physical Maps from Linked Reads
 
 <p align="center">
   <b>Physical maps from linked reads — rewritten in Rust.</b><br>
