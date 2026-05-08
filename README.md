@@ -28,7 +28,7 @@ Physlr 2 takes linked-read sequencing data (10x Genomics Chromium or MGI stLFR) 
 ## Overview
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-stages.png" alt="Physlr pipeline stages" width="300">
+  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-stages.png" alt="Physlr pipeline stages" height="200">
 </p>
 
 Physlr 2 performs two main tasks:
@@ -44,8 +44,8 @@ Backbone paths mapped to the GRCh38 reference genome for two human cell lines:
 
 | | NA12878 (stLFR) | NA24143 (stLFR) |
 |:---|:---:|:---:|
-| **Backbone** | [<img src="results/na12878_backbone_v023.png" width="300">](results/na12878_backbone_v023.png) | [<img src="results/na24143_backbone_v023.png" width="300">](results/na24143_backbone_v023.png) |
-| **Reference** | [<img src="results/na12878_reference_v023.png" width="300">](results/na12878_reference_v023.png) | [<img src="results/na24143_reference_v023.png" width="300">](results/na24143_reference_v023.png) |
+| **Backbone** | [<img src="results/na12878_backbone_v023.png" height="200">](results/na12878_backbone_v023.png) | [<img src="results/na24143_backbone_v023.png" height="200">](results/na24143_backbone_v023.png) |
+| **Reference** | [<img src="results/na12878_reference_v023.png" height="200">](results/na12878_reference_v023.png) | [<img src="results/na24143_reference_v023.png" height="200">](results/na24143_reference_v023.png) |
 
 *Backbone: paths colored by reference chromosome. Reference: chromosomes colored by backbone path. Click to enlarge.*
 
