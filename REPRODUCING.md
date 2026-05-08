@@ -17,7 +17,7 @@ This document provides step-by-step instructions to reproduce the Physlr 2 physi
 
 | Resource | Minimum | Recommended |
 |----------|---------|-------------|
-| RAM | 120 GB | 128 GB |
+| RAM | 120 GB | 128 GB (for a human-size genome) |
 | CPU cores | 8 | 16 |
 | Disk space | 600 GB | 1 TB |
 | Wall time | 24 hours | 12 hours |
