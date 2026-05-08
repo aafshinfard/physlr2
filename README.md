@@ -109,41 +109,50 @@ physlr --help
 
 ## Quick Start
 
-### One-command physical map
+Physlr provides three main commands, from most automated to most granular:
 
-Build a physical map directly from linked-read FASTQ files:
+### `physlr pipeline` — End-to-end (FASTQ → physical map → scaffolds)
+
+Build a physical map and scaffold a draft assembly in one command:
+
+```bash
+physlr pipeline reads.R1.fq.gz reads.R2.fq.gz --draft draft.fa -o output/ -p mygenome
+```
+
+This takes raw linked-read FASTQ files and a draft assembly, and produces:
+- `output/mygenome.backbone.path` — the physical map
+- `output/mygenome.filtered.tsv` — filtered barcode minimizers
+- `output/mygenome.scaffolds.fa` — the scaffolded assembly
+- `output/mygenome.report.json` — before/after assembly metrics
+
+To include NG50 in the metrics, add the expected genome size (optional):
+
+```bash
+physlr pipeline reads.R1.fq.gz reads.R2.fq.gz --draft draft.fa -o output/ -g 3088269832
+```
+
+### `physlr physical-map` — Physical map only
+
+Build a physical map from linked-read FASTQ files without scaffolding:
 
 ```bash
 physlr physical-map reads.R1.fq.gz reads.R2.fq.gz -o output/ -p mygenome
 ```
 
-This runs the full pipeline (indexing, filtering, overlap, molecule separation, backbone extraction) and produces the physical map in `output/`.
+This runs the full physical map pipeline (indexing, filtering, overlap, molecule separation, backbone extraction) and produces the physical map files in `output/`.
 
-To also run the optional **merge-paths** step, which uses bridge molecules to merge adjacent backbone paths and improve contiguity:
+### `physlr scaffolds` — Scaffolding only
 
-```bash
-physlr physical-map reads.R1.fq.gz reads.R2.fq.gz -o output/ -p mygenome --merge-paths
-```
-
-### Scaffolding
-
-Scaffold a draft assembly using the physical map output:
+Scaffold a draft assembly using an existing physical map (produced by `physical-map`):
 
 ```bash
-physlr scaffolds output/mygenome.backbone.path output/mygenome.filtered.tsv draft.fa -o output/ -p mygenome
+physlr scaffolds output/mygenome.backbone.path output/mygenome.filtered.tsv draft.fa -o output/
 ```
 
-The scaffolds command takes three positional arguments:
-1. The backbone path file produced by `physical-map`
-2. The filtered minimizer TSV produced by `physical-map`
-3. The draft assembly FASTA to scaffold
-
-To include NG50 in the output metrics, add the expected genome size (optional):
-
-```bash
-physlr scaffolds output/mygenome.backbone.path output/mygenome.filtered.tsv draft.fa \
-  -o output/ -p mygenome -g 3088269832
-```
+The three positional arguments are:
+1. Backbone path file from `physical-map`
+2. Filtered minimizer TSV from `physical-map`
+3. Draft assembly FASTA to scaffold
 
 ### Step-by-step CLI
 
@@ -211,6 +220,10 @@ Linked reads (FASTQ + barcodes)
 
 | Command | Description |
 |---------|-------------|
+| **Pipelines** | |
+| `pipeline` | End-to-end: FASTQ → physical map → scaffolded assembly |
+| `physical-map` | Build a physical map from linked-read FASTQ files |
+| `scaffolds` | Scaffold a draft assembly using an existing physical map |
 | **Indexing** | |
 | `index` | Extract (k,w)-minimizers from FASTA/FASTQ, grouped by barcode |
 | `index-contigs` | Extract ordered minimizers from FASTA contigs or reference |
@@ -235,9 +248,7 @@ Linked reads (FASTQ + barcodes)
 | `metrics` | Compute assembly metrics (N50, NG50, etc.) |
 | `path-metrics` | Compute physical map metrics |
 | `backbone-dot` | Generate DOT visualization of backbone paths |
-| **Pipelines** | |
-| `physical-map` | Run the full physical map pipeline |
-| `scaffolds` | Run the full scaffolding pipeline |
+
 
 ## Parameters
 
