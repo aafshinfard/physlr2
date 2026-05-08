@@ -2,11 +2,11 @@
 name = "physlr"
 version = "2.0.0"
 edition = "2021"
-authors = ["Physlr Contributors"]
+authors = ["Afshin Afshinfard"]
 description = "Next-generation physical maps from linked reads"
 license = "GPL-3.0"
 readme = "README.md"
-repository = "https://github.com/BirolLab/physlr"
+repository = "https://github.com/aafshinfard/physlr2"
 keywords = ["bioinformatics", "genomics", "linked-reads", "physical-map", "scaffolding"]
 categories = ["science", "command-line-utilities"]
 

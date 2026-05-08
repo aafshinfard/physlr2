@@ -1,0 +1,46 @@
+{% set name = "physlr2" %}
+{% set version = "2.0.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/aafshinfard/physlr2/archive/v{{ version }}.tar.gz
+  sha256: REPLACE_WITH_SHA256_OF_RELEASE_TARBALL
+
+build:
+  number: 0
+  run_exports:
+    - {{ pin_subpackage(name, max_pin="x.x") }}
+
+requirements:
+  build:
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+    - rust >=1.70
+    - cargo
+  run:
+    - python >=3.8
+
+test:
+  commands:
+    - physlr --version
+    - physlr --help
+
+about:
+  home: https://github.com/aafshinfard/physlr2
+  license: GPL-3.0-only
+  license_family: GPL
+  license_file: LICENSE
+  summary: "Physical maps from linked reads (Rust rewrite)"
+  description: |
+    Physlr 2 constructs de novo physical maps using linked reads
+    (10x Genomics Chromium or MGI stLFR) and uses them to scaffold
+    genome assemblies. This is a ground-up rewrite of Physlr in Rust.
+  dev_url: https://github.com/aafshinfard/physlr2
+  doc_url: https://github.com/aafshinfard/physlr2/blob/main/README.md
+
+extra:
+  recipe-maintainers:
+    - aafshinfard

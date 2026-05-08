@@ -1,55 +1,101 @@
-# Physlr v2
+[![Published in DNA](https://img.shields.io/badge/Published%20in-DNA-blue.svg)](https://doi.org/10.3390/dna2020009)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Conda](https://img.shields.io/conda/dn/bioconda/physlr2?label=Conda%20downloads)](https://anaconda.org/bioconda/physlr2)
 
-**Next-generation physical maps from linked reads.**
+<p align="center">
+  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-logo-transparent.png" alt="Physlr logo" width="400">
+</p>
 
-Physlr constructs de novo physical maps using linked reads (10x Genomics Chromium or MGI stLFR) and uses them to scaffold genome assemblies. This is a ground-up rewrite of the [original Physlr](https://github.com/bcgsc/physlr) in Rust for performance and maintainability.
+# Physlr 2
+
+**A ground-up Rust rewrite of [Physlr](https://github.com/bcgsc/physlr) for constructing physical maps from linked reads.**
+
+Physlr 2 takes linked-read sequencing data (10x Genomics Chromium or MGI stLFR) and constructs *de novo* physical maps — ordered sets of molecules along each chromosome. These physical maps can then scaffold draft genome assemblies to chromosome-level contiguity.
+
+## Contents
+
+- [Overview](#overview)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Pipeline](#pipeline)
+- [Commands](#commands)
+- [Parameters](#parameters)
+- [Reproducing Results](#reproducing-results)
+- [Comparison with Physlr v1](#comparison-with-physlr-v1)
+- [Project Structure](#project-structure)
+- [Citation](#citation)
+- [License](#license)
 
 ## Overview
 
-Physlr takes linked-read sequencing data and:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-stages.png" alt="Physlr pipeline stages" width="600">
+</p>
 
-1. **Builds a physical map** — an ordered set of molecules along each chromosome
-2. **Scaffolds draft assemblies** — orders and orients contigs using the physical map
+Physlr 2 performs two main tasks:
 
-### Pipeline stages
+1. **Physical map construction** — builds an ordered map of molecules along each chromosome from linked-read barcodes.
+2. **Assembly scaffolding** — uses the physical map to order and orient contigs from a draft genome assembly.
 
-```
-Linked reads (FASTQ + barcodes)
-  │
-  ├─ Index minimizers
-  ├─ Filter barcodes & minimizers
-  ├─ Compute barcode overlap graph
-  ├─ Separate barcodes into molecules
-  ├─ Maximum spanning tree → prune → backbone paths
-  │
-  └─► Physical map (backbone paths)
-        │
-        ├─ Map draft contigs to physical map
-        ├─ Order & orient contigs
-        │
-        └─► Scaffolded assembly (FASTA)
-```
+### Physical Map Visualization
+
+Backbone paths mapped to the GRCh38 reference genome for two human cell lines:
+
+| NA12878 (stLFR) | NA24143 (stLFR) |
+|:---:|:---:|
+| ![NA12878 backbone](results/na12878_backbone.png) | ![NA24143 backbone](results/na24143_backbone.png) |
+| ![NA12878 reference](results/na12878_reference.png) | ![NA24143 reference](results/na24143_reference.png) |
+
+*Top: backbone paths colored by reference chromosome. Bottom: reference chromosomes colored by backbone path.*
 
 ## Installation
 
-### From source (requires Rust 1.70+)
+### From Conda (recommended)
 
 ```bash
-git clone <repo-url>
-cd physlr-next
+conda install -c bioconda physlr2
+```
+
+### From Source
+
+Requires Rust 1.70 or newer.
+
+```bash
+git clone https://github.com/aafshinfard/physlr2.git
+cd physlr2
 cargo build --release
-# Binary at target/release/physlr
+# Binary: target/release/physlr
+```
+
+To install system-wide:
+
+```bash
+cargo install --path .
 ```
 
 ### Dependencies
 
-- **Rust** ≥ 1.70 (build)
-- **Python 3** ≥ 3.10 (Snakemake workflow, visualization scripts)
-- **Snakemake** ≥ 7.0 (optional, for automated pipeline)
-- **Quast** (optional, for reference-based assembly evaluation)
-- **Graphviz** (optional, for rendering DOT visualizations)
+**Build:**
+- Rust ≥ 1.70
 
-## Quick start
+**Runtime (optional, for visualization and workflow):**
+- Python ≥ 3.8 with matplotlib (for `plotpaf.py`)
+- Snakemake ≥ 7.0 (for automated workflow)
+- QUAST (for reference-based evaluation)
+
+## Quick Start
+
+### One-command physical map
+
+```bash
+physlr physical-map reads.mxs.tsv -o output/ -p mygenome
+```
+
+### One-command scaffolding
+
+```bash
+physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome -g 3088269832
+```
 
 ### Step-by-step CLI
 
@@ -60,133 +106,185 @@ physlr index reads.fq.gz -o reads.mxs.tsv -k 32 -w 32
 # 2. Filter barcodes and minimizers
 physlr filter-minimizers reads.mxs.tsv -o filtered.mxs.tsv -n 100 -N 5000
 
-# 3. Compute overlap graph
-physlr overlap filtered.mxs.tsv -o overlap.tsv --min-shared 10
+# 3. Compute barcode overlap graph
+physlr overlap filtered.mxs.tsv -o overlap.tsv
 
-# 4. Separate molecules
-physlr molecules overlap.tsv -o mol.tsv
+# 4. Filter edges by percentile
+physlr filter-overlap overlap.tsv -o overlap.filtered.tsv -p 85
 
-# 5. Extract backbone paths (physical map)
+# 5. Separate barcodes into molecules
+physlr molecules overlap.filtered.tsv -o mol.tsv --strategy bc+cc
+
+# 6. Extract backbone paths (physical map)
 physlr backbone mol.tsv -o backbone.path
 
-# 6. Index draft assembly contigs
-physlr index-contigs draft.fa -o draft.mxs.tsv -k 32 -w 32
+# 7. (Optional) Merge adjacent backbone paths
+physlr split-minimizers mol.tsv filtered.mxs.tsv -o split.mxs.tsv
+physlr merge-paths backbone.path split.mxs.tsv -o merged.path
 
-# 7. Map contigs to physical map
+# 8. Map contigs to physical map and scaffold
+physlr index-contigs draft.fa -o draft.mxs.tsv
 physlr map backbone.path filtered.mxs.tsv draft.mxs.tsv -o map.bed
-
-# 8. Convert to scaffold paths
 physlr bed-to-path map.bed -o scaffold.path
-
-# 9. Produce scaffolded FASTA
 physlr path-to-fasta draft.fa scaffold.path -o scaffolds.fa
 ```
 
-### One-command pipelines
+### Snakemake Workflow
 
 ```bash
-# Physical map only
-physlr physical-map reads.mxs.tsv -o output/ -p mygenome
-
-# Full scaffolding
-physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome -g 300000000
+cd workflow/
+# Edit config.yaml with your file paths
+snakemake -s Snakefile --configfile config.yaml -j 8
 ```
 
-### Snakemake workflow
+## Pipeline
 
-```bash
-# Edit workflow/config.yaml with your file paths and parameters
-snakemake -s workflow/Snakefile --configfile config.yaml -j 8
+```
+Linked reads (FASTQ + barcodes)
+  │
+  ├── index              Extract (k,w)-minimizers per barcode
+  ├── filter-minimizers  Remove low/high-count barcodes, singleton minimizers
+  ├── overlap            Compute barcode overlap graph (shared minimizers)
+  ├── filter-overlap     Remove low-weight edges by percentile
+  ├── molecules          Separate barcodes into individual molecules
+  ├── backbone           MST → prune branches → extract paths
+  │
+  └──► Physical map (backbone paths)
+         │
+         ├── merge-paths       (Optional) Merge adjacent paths via bridge molecules
+         ├── map / map-paf     Map contigs or reference to the physical map
+         ├── bed-to-path       Convert mappings to scaffold paths
+         ├── path-to-fasta     Produce scaffolded FASTA
+         │
+         └──► Scaffolded assembly
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `index` | Extract (k,w)-minimizers from FASTA/FASTQ, grouping by barcode |
-| `index-contigs` | Extract ordered minimizers from FASTA (for contigs/reference) |
-| `filter-minimizers` | Filter barcodes by count, remove singleton/repetitive minimizers |
+| **Indexing** | |
+| `index` | Extract (k,w)-minimizers from FASTA/FASTQ, grouped by barcode |
+| `index-contigs` | Extract ordered minimizers from FASTA contigs or reference |
+| `repeat-filter` | Detect repetitive k-mers and build a Bloom filter |
+| **Graph Construction** | |
+| `filter-minimizers` | Filter barcodes by count; remove singleton/repetitive minimizers |
 | `overlap` | Compute barcode overlap graph from shared minimizers |
 | `filter-overlap` | Remove low-weight edges by percentile |
+| **Molecule Separation** | |
 | `molecules` | Separate barcodes into individual molecules |
-| `backbone` | Extract backbone paths (physical map) from overlap graph |
-| `map` | Map query sequences to the physical map |
+| `split-minimizers` | Assign barcode minimizers to individual molecules |
+| `trace-molecules` | Diagnostic: trace molecule separation for specific barcodes |
+| **Physical Map** | |
+| `backbone` | Extract backbone paths from the molecule overlap graph |
+| `merge-paths` | Merge adjacent backbone paths using bridge molecule evidence |
+| **Scaffolding** | |
+| `map` | Map query sequences to the physical map (BED output) |
+| `map-paf` | Map sequences to the physical map (PAF output, for visualization) |
 | `bed-to-path` | Convert BED mappings to scaffold paths |
-| `path-to-fasta` | Produce scaffolded FASTA from paths |
+| `path-to-fasta` | Produce scaffolded FASTA from scaffold paths |
+| **Reporting** | |
 | `metrics` | Compute assembly metrics (N50, NG50, etc.) |
 | `path-metrics` | Compute physical map metrics |
 | `backbone-dot` | Generate DOT visualization of backbone paths |
+| **Pipelines** | |
 | `physical-map` | Run the full physical map pipeline |
 | `scaffolds` | Run the full scaffolding pipeline |
 
 ## Parameters
 
-Key parameters and their defaults:
+### Core Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `-k` | 32 | K-mer size for minimizers |
 | `-w` | 32 | Window size for minimizers |
-| `--min-bx-count` | 100 | Minimum minimizers per barcode |
-| `--max-bx-count` | 5000 | Maximum minimizers per barcode |
-| `--min-overlap` / `--min-shared` | 10 | Minimum shared minimizers for an edge |
-| `--edge-percentile` | 90 | Percentile of edges to remove |
+| `-t` | auto | Number of threads (auto-detected, capped at 16) |
+| `-v` | 1 | Verbosity (0=silent, 1=info, 2=debug) |
+
+### Filtering
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--min-count` / `-n` | 100 | Minimum minimizers per barcode |
+| `--max-count` / `-N` | 5000 | Maximum minimizers per barcode |
+| `--min-shared` | 10 | Minimum shared minimizers for an overlap edge |
+| `--percentile` / `-p` | 90 | Percentile of edges to remove |
+
+### Backbone Extraction
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
 | `--prune-branches` | 10 | Minimum branch size in MST |
-| `--min-path-size` / `--min-component-size` | 50 | Minimum backbone path length |
-| `--min-map-score` | 10 | Minimum mapping score |
+| `--prune-bridges` | 10 | Minimum bridge size |
+| `--prune-junctions` | 200 | Minimum junction branch size |
+| `--min-component-size` | 50 | Minimum backbone path length |
+
+### Merge-Paths
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--endpoint-depth` | 25 | Molecules from each path end used as endpoints |
+| `--min-endpoint-hits` | 4 | Min endpoint molecules a bridge must connect per side |
+| `--min-bridges` | 2 | Minimum bridge molecules to accept a link |
+| `--min-shared-mx` | 3 | Minimum shared minimizers for a bridge molecule |
+| `--max-connections` | 2 | Max paths a bridge molecule can connect |
+| `--max-links-per-endpoint` | 1 | Max candidate links per endpoint |
+| `--min-bridge-density` | 0.01 | Minimum bridges / min_path_len ratio |
+
+### Scaffolding
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--min-score` / `-n` | 10 | Minimum mapping score |
 | `--gap-size` | 100 | Gap size (Ns) between scaffolded contigs |
 | `-g` | — | Expected genome size (for NG50 reporting) |
 
-## Project structure
+## Reproducing Results
 
-```
-physlr-next/
-├── Cargo.toml              # Rust package manifest
-├── src/
-│   ├── main.rs             # CLI entry point (clap)
-│   ├── lib.rs              # Library root
-│   ├── minimizer/mod.rs    # Minimizer extraction and filtering
-│   ├── overlap/mod.rs      # Barcode overlap computation (parallel)
-│   ├── molecules/mod.rs    # Molecule separation (biconnected components)
-│   ├── graph/mod.rs        # Graph types and algorithms (MST, pruning, paths)
-│   ├── backbone/mod.rs     # Backbone path extraction
-│   ├── map/mod.rs          # Mapping sequences to physical map
-│   ├── scaffold/mod.rs     # Scaffolding (ordering, orienting, joining)
-│   ├── report/mod.rs       # Metrics computation and reporting
-│   └── io/mod.rs           # File I/O (TSV, FASTA, BED, gzip)
-├── workflow/
-│   ├── Snakefile           # Snakemake pipeline
-│   └── scripts/            # Helper scripts (data download, visualization)
-├── data/                   # Test datasets
-└── tests/                  # Integration tests
-```
+See [REPRODUCING.md](REPRODUCING.md) for step-by-step instructions to reproduce the NA12878 and NA24143 physical map results shown above, including data download links and the complete pipeline script.
 
-## Design decisions
+## Comparison with Physlr v1
 
-| Aspect | Original Physlr | Physlr v2 |
-|--------|----------------|-----------|
-| Language | Python + C++ | Rust (single language) |
-| Graph library | NetworkX (Python) | petgraph (Rust) |
-| Pipeline | GNU Make | Snakemake + CLI subcommands |
-| Minimizer extraction | External (indexlr/btllib) | Built-in |
+| Aspect | Physlr v1 | Physlr 2 |
+|--------|-----------|----------|
+| Language | Python + C++ | Rust |
+| Graph library | NetworkX | petgraph |
+| Pipeline driver | GNU Make | Snakemake + CLI subcommands |
+| Minimizer extraction | External (indexlr/btllib) | Built-in + btllib support |
 | Parallelism | Limited | rayon (data-parallel) |
-| Memory | Python dicts + NetworkX overhead | Compact hash maps (rustc-hash) |
-| Index stability | N/A | StableUnGraph (safe node removal) |
+| Memory | Python dicts + NetworkX | Compact hash maps (rustc-hash) |
+| Molecule separation | Louvain communities | Biconnected components / k-clique / cosine similarity |
+| Path merging | — | Bridge molecule evidence (merge-paths) |
 
-## Testing
+## Project Structure
 
-```bash
-# Generate synthetic test data
-python3 workflow/scripts/generate_synthetic_test.py -o data/synthetic
-
-# Run pipeline on synthetic data
-physlr physical-map data/synthetic/linked_reads.fq \
-  -o data/synthetic/output -p test \
-  --min-bx-count 2 --min-overlap 2 --edge-percentile 0 \
-  --prune-branches 2 --min-path-size 3
-
-# Compute metrics
-physlr metrics data/synthetic/output/test.scaffolds.fa -g 300000
+```
+physlr2/
+├── Cargo.toml                 # Rust package manifest
+├── src/
+│   ├── main.rs                # CLI entry point (clap)
+│   ├── lib.rs                 # Library root
+│   ├── minimizer/mod.rs       # Minimizer extraction and filtering
+│   ├── overlap/mod.rs         # Barcode overlap computation
+│   ├── molecules/mod.rs       # Molecule separation
+│   ├── graph/mod.rs           # Graph algorithms (MST, pruning)
+│   ├── backbone/mod.rs        # Backbone extraction + merge-paths
+│   ├── map/mod.rs             # Mapping to physical map
+│   ├── scaffold/mod.rs        # Assembly scaffolding
+│   ├── repeat/mod.rs          # Repeat k-mer detection (Bloom filter)
+│   ├── report/mod.rs          # Metrics and reporting
+│   └── io/mod.rs              # File I/O (TSV, FASTA, BED, gzip)
+├── scripts/
+│   ├── plotpaf.py             # Backbone-vs-reference visualization
+│   ├── find-ntcard-mode.py    # K-mer histogram mode finder
+│   └── profile_pipeline.sh    # Pipeline profiling (time + memory)
+├── workflow/
+│   ├── Snakefile              # Snakemake pipeline
+│   └── scripts/               # Workflow helper scripts
+├── results/                   # Example result plots
+├── REPRODUCING.md             # Reproducibility instructions
+└── LICENSE                    # GPL-3.0
 ```
 
 ## Citation
@@ -195,8 +293,12 @@ If you use Physlr, please cite:
 
 > Afshinfard, A., Jackman, S.D., Wong, J., Coombe, L., Nikolic, V., Chu, J., Mohamadi, H., & Birol, I. (2022).
 > Physlr: Next-Generation Physical Maps. *DNA*, 2(2), 116–130.
-> https://doi.org/10.3390/dna2020009
+> [https://doi.org/10.3390/dna2020009](https://doi.org/10.3390/dna2020009)
+
+## Support
+
+[Create a new issue on GitHub.](https://github.com/aafshinfard/physlr2/issues)
 
 ## License
 
-GPL-3.0
+[GNU General Public License v3.0](LICENSE)
