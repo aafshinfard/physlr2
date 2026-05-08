@@ -111,16 +111,17 @@ physlr --help
 
 ### One-command physical map
 
+Build a physical map from linked reads:
+
 ```bash
+# Index minimizers from linked reads (FASTQ with barcodes)
+physlr index reads.fq.gz -o reads.mxs.tsv
+
+# Build the physical map
 physlr physical-map reads.mxs.tsv -o output/ -p mygenome
 ```
 
-Where:
-- `reads.mxs.tsv` — minimizer index of linked reads (produced by `physlr index`)
-- `-o output/` — output directory
-- `-p mygenome` — prefix for output files
-
-To also run the optional **merge-paths** step, which merges adjacent backbone paths using bridge molecule evidence to improve contiguity:
+To also run the optional **merge-paths** step, which uses bridge molecules to merge adjacent backbone paths and improve contiguity:
 
 ```bash
 physlr physical-map reads.mxs.tsv -o output/ -p mygenome --merge-paths
@@ -128,15 +129,24 @@ physlr physical-map reads.mxs.tsv -o output/ -p mygenome --merge-paths
 
 ### One-command scaffolding
 
+Scaffold a draft assembly using the physical map:
+
 ```bash
+# Index minimizers from linked reads
+physlr index reads.fq.gz -o reads.mxs.tsv
+
+# Index minimizers from the draft assembly
+physlr index-contigs draft.fa -o draft.mxs.tsv
+
+# Scaffold
 physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome
 ```
 
-Where:
-- `reads.mxs.tsv` — minimizer index of linked reads
-- `draft.fa` — draft assembly FASTA to scaffold
-- `draft.mxs.tsv` — minimizer index of the draft assembly (produced by `physlr index-contigs`)
-- `-g SIZE` — (optional) expected genome size in bp, used only for NG50 reporting (e.g. `-g 3088269832` for human)
+To include NG50 in the output metrics (optional), add the expected genome size:
+
+```bash
+physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome -g 3088269832
+```
 
 ### Step-by-step CLI
 
@@ -163,7 +173,7 @@ physlr backbone mol.tsv -o backbone.path
 physlr split-minimizers mol.tsv filtered.mxs.tsv -o split.mxs.tsv
 physlr merge-paths backbone.path split.mxs.tsv -o merged.path
 
-# 8. Map contigs to physical map and scaffold
+# 8. (Optional) Scaffold a draft assembly using the physical map
 physlr index-contigs draft.fa -o draft.mxs.tsv
 physlr map backbone.path filtered.mxs.tsv draft.mxs.tsv -o map.bed
 physlr bed-to-path map.bed -o scaffold.path
@@ -234,52 +244,60 @@ Linked reads (FASTQ + barcodes)
 
 ## Parameters
 
+Most parameters have sensible defaults and do not need to be changed for typical use. The tables below are for advanced users who want to tune the pipeline.
+
 ### Core Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `-k` | 32 | K-mer size for minimizers |
-| `-w` | 32 | Window size for minimizers |
+| `-k` | 32 | K-mer size for minimizer extraction |
+| `-w` | 32 | Window size for minimizer extraction |
 | `-t` | auto | Number of threads (auto-detected, capped at 16) |
-| `-v` | 1 | Verbosity (0=silent, 1=info, 2=debug) |
+| `-v` | 1 | Verbosity: 0 = silent, 1 = info, 2 = debug |
 
-### Filtering
+### Barcode and Edge Filtering
+
+These control which barcodes and edges are kept in the overlap graph.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--min-count` / `-n` | 100 | Minimum minimizers per barcode |
-| `--max-count` / `-N` | 5000 | Maximum minimizers per barcode |
-| `--min-shared` | 10 | Minimum shared minimizers for an overlap edge |
-| `--percentile` / `-p` | 90 | Percentile of edges to remove |
+| `--min-count` / `-n` | 100 | Minimum minimizers per barcode (removes low-coverage barcodes) |
+| `--max-count` / `-N` | 5000 | Maximum minimizers per barcode (removes chimeric/noisy barcodes) |
+| `--min-shared` | 10 | Minimum shared minimizers to create an overlap edge |
+| `--percentile` / `-p` | 90 | Remove the bottom N% of edges by weight. Use ~85 for stLFR, ~92.5 for 10x Chromium |
 
 ### Backbone Extraction
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--prune-branches` | 10 | Minimum branch size in MST |
-| `--prune-bridges` | 10 | Minimum bridge size |
-| `--prune-junctions` | 200 | Minimum junction branch size |
-| `--min-component-size` | 50 | Minimum backbone path length |
-
-### Merge-Paths
+These control how the minimum spanning tree is pruned to extract backbone paths.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--endpoint-depth` | 25 | Molecules from each path end used as endpoints |
-| `--min-endpoint-hits` | 4 | Min endpoint molecules a bridge must connect per side |
-| `--min-bridges` | 2 | Minimum bridge molecules to accept a link |
-| `--min-shared-mx` | 3 | Minimum shared minimizers for a bridge molecule |
-| `--max-connections` | 2 | Max paths a bridge molecule can connect |
-| `--max-links-per-endpoint` | 1 | Max candidate links per endpoint |
-| `--min-bridge-density` | 0.01 | Minimum bridges / min_path_len ratio |
+| `--prune-branches` | 10 | Remove branches shorter than this from MST junctions |
+| `--prune-bridges` | 10 | Remove bridge edges connecting components smaller than this |
+| `--prune-junctions` | 200 | Remove junction branches shorter than this |
+| `--min-component-size` | 50 | Discard backbone paths shorter than this (in molecules) |
 
-### Scaffolding
+### Merge-Paths (optional)
+
+These control the optional post-processing step that merges adjacent backbone paths. The defaults were optimized on human stLFR data (NA12878 + NA24143) for zero false positives.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--min-score` / `-n` | 10 | Minimum mapping score |
-| `--gap-size` | 100 | Gap size (Ns) between scaffolded contigs |
-| `-g` | — | Expected genome size (for NG50 reporting) |
+| `--endpoint-depth` | 25 | Number of molecules from each path end used as endpoints |
+| `--min-endpoint-hits` | 4 | A bridge molecule must connect to ≥ this many endpoint molecules on each side |
+| `--min-bridges` | 2 | Minimum bridge molecules required to accept a merge |
+| `--min-shared-mx` | 3 | Minimum shared minimizers between a bridge and an endpoint molecule |
+| `--max-connections` | 2 | A bridge molecule connecting > this many paths is discarded (specificity filter) |
+| `--max-links-per-endpoint` | 1 | Endpoints with > this many candidate links are discarded (ambiguity filter) |
+| `--min-bridge-density` | 0.01 | Minimum ratio of bridges to the shorter path length |
+
+### Scaffolding and Reporting
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--min-score` / `-n` | 10 | Minimum mapping score when mapping contigs to the physical map |
+| `--gap-size` | 100 | Number of Ns inserted between scaffolded contigs |
+| `-g` | — | (Optional) Expected genome size in bp. Only used for NG50 in metrics output |
 
 ## Reproducing Results
 
