@@ -41,102 +41,36 @@ def read_paf(path):
             })
     return records
 
-def chain_alignments(records, min_barcodes=50):
-    """Chain alignments using the same algorithm as the original plotpaf.rmd.
-
-    Steps (matching the R implementation):
-    1. Filter by mapq >= 1
-    2. Sort by (desc(Tlength), Tname, Tstart)
-    3. Group by (Qname, Tname), keep only records that overlap with
-       their neighbor on the Q axis
-    4. Detect segment boundaries where Qdistance >= 500000 or
-       Tdistance >= 10
-    5. Summarise each segment: merge Q/T ranges, count records
-    6. Filter segments with count >= min_barcodes (default 50)
-    """
-    mapq_threshold = 1
-    qdistance_threshold = 500000
-    tdistance_threshold = 10
-
-    def is_overlap(a_start, a_end, b_start, b_end):
-        return (a_start <= b_start <= a_end or a_start <= b_end <= a_end or
-                b_start <= a_start <= b_end or b_start <= a_end <= b_end)
-
-    def interval_distance(a_start, a_end, b_start, b_end):
-        if is_overlap(a_start, a_end, b_start, b_end):
-            return 0
-        return max(b_start - a_end, a_start - b_end)
-
-    # Step 1: filter by mapq
-    filtered = [r for r in records if r['mapq'] >= mapq_threshold]
-
-    # Step 2: sort by desc(tlength), tname, tstart
-    filtered.sort(key=lambda r: (-r['tlength'], r['tname'], r['tstart']))
-
-    # Step 3: group by (qname, tname)
+def chain_alignments(records, min_barcodes=5):
+    """Chain nearby alignments on the same query-target pair."""
+    # Group by (qname, tname)
     groups = defaultdict(list)
-    for r in filtered:
+    for r in records:
         groups[(r['qname'], r['tname'])].append(r)
 
-    # For each group, keep only records that overlap with neighbor on Q axis,
-    # then detect segment boundaries and summarise
     chained = []
     for (qname, tname), recs in groups.items():
-        # Already sorted by tstart within group (from global sort)
-        # Filter: keep records that overlap with lag or lead on Q axis
-        keep = []
-        for i, r in enumerate(recs):
-            has_overlap = False
-            if i > 0:
-                prev = recs[i - 1]
-                if is_overlap(prev['qstart'], prev['qend'], r['qstart'], r['qend']):
-                    has_overlap = True
-            if i < len(recs) - 1:
-                nxt = recs[i + 1]
-                if is_overlap(r['qstart'], r['qend'], nxt['qstart'], nxt['qend']):
-                    has_overlap = True
-            if has_overlap:
-                keep.append(r)
-
-        if not keep:
-            continue
-
-        # Detect segment boundaries
+        recs.sort(key=lambda r: (r['tstart'], -r['score']))
+        # Simple chaining: merge overlapping/adjacent segments
         segments = []
-        current_seg = [keep[0]]
-        for i in range(1, len(keep)):
-            prev = keep[i - 1]
-            curr = keep[i]
-            qdist = interval_distance(prev['qstart'], prev['qend'],
-                                      curr['qstart'], curr['qend'])
-            tdist = interval_distance(prev['tstart'], prev['tend'],
-                                      curr['tstart'], curr['tend'])
-            if qdist >= qdistance_threshold or tdist >= tdistance_threshold:
-                segments.append(current_seg)
-                current_seg = [curr]
+        for r in recs:
+            if segments and r['tstart'] <= segments[-1]['tend'] + 10:
+                seg = segments[-1]
+                seg['tend'] = max(seg['tend'], r['tend'])
+                seg['qstart'] = min(seg['qstart'], r['qstart'])
+                seg['qend'] = max(seg['qend'], r['qend'])
+                seg['score'] += r['score']
+                seg['barcodes'] += 1
             else:
-                current_seg.append(curr)
-        segments.append(current_seg)
-
-        # Summarise each segment
-        for seg in segments:
-            if len(seg) < min_barcodes:
-                continue
-            chained.append({
-                'qname': qname,
-                'tname': tname,
-                'qlength': seg[0]['qlength'],
-                'tlength': seg[0]['tlength'],
-                'qstart': min(r['qstart'] for r in seg),
-                'qend': max(r['qend'] for r in seg),
-                'tstart': min(r['tstart'] for r in seg),
-                'tend': max(r['tend'] for r in seg),
-                'score': sum(r['score'] for r in seg),
-                'orientation': max(set(r['orientation'] for r in seg),
-                                   key=lambda o: sum(1 for r in seg if r['orientation'] == o)),
-                'barcodes': len(seg),
-            })
-
+                segments.append({
+                    'qname': qname, 'tname': tname,
+                    'qlength': r['qlength'], 'tlength': r['tlength'],
+                    'qstart': r['qstart'], 'qend': r['qend'],
+                    'tstart': r['tstart'], 'tend': r['tend'],
+                    'score': r['score'], 'orientation': r['orientation'],
+                    'barcodes': 1,
+                })
+        chained.extend(s for s in segments if s['barcodes'] >= min_barcodes)
     return chained
 
 def chr_sort_key(name):
@@ -296,7 +230,7 @@ def main():
 
     paf_file = sys.argv[1]
     output_prefix = sys.argv[2]
-    min_barcodes = int(sys.argv[3]) if len(sys.argv) > 3 else 50
+    min_barcodes = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 
     records = read_paf(paf_file)
     print(f"Read {len(records)} PAF records")
