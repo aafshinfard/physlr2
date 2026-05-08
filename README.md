@@ -115,7 +115,12 @@ physlr --help
 physlr physical-map reads.mxs.tsv -o output/ -p mygenome
 ```
 
-To also run the optional **merge-paths** step (merges adjacent backbone paths using bridge molecule evidence, improving contiguity):
+Where:
+- `reads.mxs.tsv` — minimizer index of linked reads (produced by `physlr index`)
+- `-o output/` — output directory
+- `-p mygenome` — prefix for output files
+
+To also run the optional **merge-paths** step, which merges adjacent backbone paths using bridge molecule evidence to improve contiguity:
 
 ```bash
 physlr physical-map reads.mxs.tsv -o output/ -p mygenome --merge-paths
@@ -124,8 +129,14 @@ physlr physical-map reads.mxs.tsv -o output/ -p mygenome --merge-paths
 ### One-command scaffolding
 
 ```bash
-physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome -g 3088269832
+physlr scaffolds reads.mxs.tsv draft.fa draft.mxs.tsv -o output/ -p mygenome
 ```
+
+Where:
+- `reads.mxs.tsv` — minimizer index of linked reads
+- `draft.fa` — draft assembly FASTA to scaffold
+- `draft.mxs.tsv` — minimizer index of the draft assembly (produced by `physlr index-contigs`)
+- `-g SIZE` — (optional) expected genome size in bp, used only for NG50 reporting (e.g. `-g 3088269832` for human)
 
 ### Step-by-step CLI
 
