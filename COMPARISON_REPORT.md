@@ -29,7 +29,7 @@ Backbone paths colored by reference chromosome. Each horizontal bar is a backbon
 
 | Original Physlr | Physlr 2 v0.10 | Physlr 2 v0.23 |
 |:---:|:---:|:---:|
-| [<img src="results/comparison/original_na12878_backbone.png" height="200">](results/comparison/original_na12878_backbone.png) | [<img src="results/comparison/v010_na12878_backbone.png" height="200">](results/comparison/v010_na12878_backbone.png) | [<img src="results/comparison/v023_na12878_backbone.png" height="200">](results/comparison/v023_na12878_backbone.png) |
+| [<img src="results/comparison/original_na12878_backbone_v2.png" height="200">](results/comparison/original_na12878_backbone_v2.png) | [<img src="results/comparison/v010_na12878_backbone_v2.png" height="200">](results/comparison/v010_na12878_backbone_v2.png) | [<img src="results/comparison/v023_na12878_backbone_v2.png" height="200">](results/comparison/v023_na12878_backbone_v2.png) |
 
 ### Reference View
 
@@ -37,7 +37,7 @@ Reference chromosomes colored by backbone path. Shows how well the physical map 
 
 | Original Physlr | Physlr 2 v0.10 | Physlr 2 v0.23 |
 |:---:|:---:|:---:|
-| [<img src="results/comparison/original_na12878_reference.png" height="200">](results/comparison/original_na12878_reference.png) | [<img src="results/comparison/v010_na12878_reference.png" height="200">](results/comparison/v010_na12878_reference.png) | [<img src="results/comparison/v023_na12878_reference.png" height="200">](results/comparison/v023_na12878_reference.png) |
+| [<img src="results/comparison/original_na12878_reference_v2.png" height="200">](results/comparison/original_na12878_reference_v2.png) | [<img src="results/comparison/v010_na12878_reference_v2.png" height="200">](results/comparison/v010_na12878_reference_v2.png) | [<img src="results/comparison/v023_na12878_reference_v2.png" height="200">](results/comparison/v023_na12878_reference_v2.png) |
 
 ---
 
@@ -47,13 +47,13 @@ Reference chromosomes colored by backbone path. Shows how well the physical map 
 
 | Original Physlr | Physlr 2 v0.10 | Physlr 2 v0.23 |
 |:---:|:---:|:---:|
-| [<img src="results/comparison/original_na24143_backbone.png" height="200">](results/comparison/original_na24143_backbone.png) | [<img src="results/comparison/v010_na24143_backbone.png" height="200">](results/comparison/v010_na24143_backbone.png) | [<img src="results/comparison/v023_na24143_backbone.png" height="200">](results/comparison/v023_na24143_backbone.png) |
+| [<img src="results/comparison/original_na24143_backbone_v2.png" height="200">](results/comparison/original_na24143_backbone_v2.png) | [<img src="results/comparison/v010_na24143_backbone_v2.png" height="200">](results/comparison/v010_na24143_backbone_v2.png) | [<img src="results/comparison/v023_na24143_backbone_v2.png" height="200">](results/comparison/v023_na24143_backbone_v2.png) |
 
 ### Reference View
 
 | Original Physlr | Physlr 2 v0.10 | Physlr 2 v0.23 |
 |:---:|:---:|:---:|
-| [<img src="results/comparison/original_na24143_reference.png" height="200">](results/comparison/original_na24143_reference.png) | [<img src="results/comparison/v010_na24143_reference.png" height="200">](results/comparison/v010_na24143_reference.png) | [<img src="results/comparison/v023_na24143_reference.png" height="200">](results/comparison/v023_na24143_reference.png) |
+| [<img src="results/comparison/original_na24143_reference_v2.png" height="200">](results/comparison/original_na24143_reference_v2.png) | [<img src="results/comparison/v010_na24143_reference_v2.png" height="200">](results/comparison/v010_na24143_reference_v2.png) | [<img src="results/comparison/v023_na24143_reference_v2.png" height="200">](results/comparison/v023_na24143_reference_v2.png) |
 
 ---
 
