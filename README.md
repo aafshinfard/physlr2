@@ -3,7 +3,7 @@
 [![CI](https://github.com/aafshinfard/physlr2/actions/workflows/ci.yml/badge.svg)](https://github.com/aafshinfard/physlr2/actions/workflows/ci.yml)
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-logo-transparent.png" alt="Physlr logo" width="360">
+  <img src="[https://raw.githubusercontent.com/bcgsc/physlr/master/physlr-logo-transparent.png](https://github.com/aafshinfard/physlr2/blob/main/physlr2-logo.png)" alt="Physlr2 logo" width="360">
 </p>
 
 <h1 align="center">Physlr 2</h1>
