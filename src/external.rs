@@ -368,17 +368,23 @@ fn write_homopolymer_compressed_fastq(
             let seq = record.seq();
             total_bases += seq.len() as u64;
 
-            let (compressed_seq, _coord_map) =
+            let (compressed_seq, coord_map) =
                 crate::minimizer::homopolymer_compress(&seq);
             compressed_bases += compressed_seq.len() as u64;
 
-            // Write as FASTQ with compressed sequence and matching quality
-            let qual = vec![b'I'; compressed_seq.len()]; // Phred 40 placeholder
+            // Compress quality string to match: keep quality at each run's start position
+            let compressed_qual: Vec<u8> = match record.qual() {
+                Some(qual) if !qual.is_empty() => {
+                    coord_map.iter().map(|&pos| qual[pos]).collect()
+                }
+                _ => vec![b'I'; compressed_seq.len()], // No quality available, use placeholder
+            };
+
             writeln!(writer, "@{}", header)?;
             writer.write_all(&compressed_seq)?;
             writeln!(writer)?;
             writeln!(writer, "+")?;
-            writer.write_all(&qual)?;
+            writer.write_all(&compressed_qual)?;
             writeln!(writer)?;
 
             total_reads += 1;
