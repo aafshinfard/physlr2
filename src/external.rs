@@ -339,12 +339,79 @@ pub fn run_indexlr(
     Ok(bx_to_mxs)
 }
 
+/// Write a homopolymer-compressed version of FASTQ/FASTA files.
+///
+/// For long reads, collapses homopolymer runs before passing to external tools.
+/// Returns the path to the compressed file.
+fn write_homopolymer_compressed_fastq(
+    input_files: &[String],
+    output_path: &Path,
+) -> Result<()> {
+    use std::io::Write;
+
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(output_path)
+            .with_context(|| format!("Failed to create {:?}", output_path))?,
+    );
+
+    let mut total_reads = 0u64;
+    let mut total_bases = 0u64;
+    let mut compressed_bases = 0u64;
+
+    for input_file in input_files {
+        let mut reader = needletail::parse_fastx_file(input_file)
+            .map_err(|e| anyhow::anyhow!("Cannot open {}: {}", input_file, e))?;
+
+        while let Some(record) = reader.next() {
+            let record = record?;
+            let header = std::str::from_utf8(record.id()).unwrap_or("");
+            let seq = record.seq();
+            total_bases += seq.len() as u64;
+
+            let (compressed_seq, _coord_map) =
+                crate::minimizer::homopolymer_compress(&seq);
+            compressed_bases += compressed_seq.len() as u64;
+
+            // Write as FASTQ with compressed sequence and matching quality
+            let qual = vec![b'I'; compressed_seq.len()]; // Phred 40 placeholder
+            writeln!(writer, "@{}", header)?;
+            writer.write_all(&compressed_seq)?;
+            writeln!(writer)?;
+            writeln!(writer, "+")?;
+            writer.write_all(&qual)?;
+            writeln!(writer)?;
+
+            total_reads += 1;
+            if total_reads % 100_000 == 0 {
+                log::info!(
+                    "Compressed {} reads ({:.1}% compression ratio)",
+                    total_reads,
+                    compressed_bases as f64 / total_bases as f64 * 100.0
+                );
+            }
+        }
+    }
+
+    log::info!(
+        "Homopolymer compression: {} reads, {}/{} bases ({:.1}%)",
+        total_reads,
+        compressed_bases,
+        total_bases,
+        compressed_bases as f64 / total_bases as f64 * 100.0
+    );
+
+    Ok(())
+}
+
 /// Full repeat-filter + index pipeline using external tools.
 ///
 /// Runs: ntcard → find-ntcard-mode → nthits → physlr-makebf → indexlr -r
 ///
 /// This matches the pipeline in profile_pipeline.sh and produces results
 /// consistent with the published benchmarks.
+///
+/// For long reads, a homopolymer-compressed FASTQ is generated first and
+/// used as input to the external tools.
 pub fn repeat_filter_and_index(
     input_files: &[String],
     k: usize,
@@ -359,9 +426,24 @@ pub fn repeat_filter_and_index(
 ) -> Result<FxHashMap<String, FxHashSet<u64>>> {
     std::fs::create_dir_all(work_dir)?;
 
+    // For long reads, pre-compress FASTQ with homopolymer compression
+    let effective_inputs: Vec<String>;
+    let _compressed_file_guard: Option<PathBuf>; // keep path alive for cleanup
+
+    if long_reads {
+        let compressed_path = work_dir.join(format!("{}.hpc.fq", prefix));
+        log::info!("Homopolymer-compressing input for long-read mode...");
+        write_homopolymer_compressed_fastq(input_files, &compressed_path)?;
+        effective_inputs = vec![compressed_path.to_str().unwrap().to_string()];
+        _compressed_file_guard = Some(compressed_path);
+    } else {
+        effective_inputs = input_files.to_vec();
+        _compressed_file_guard = None;
+    }
+
     // Step 1: ntcard
     let histogram_path = work_dir.join(format!("{}_k{}.histogram", prefix, k));
-    run_ntcard(input_files, k, threads, &histogram_path)?;
+    run_ntcard(&effective_inputs, k, threads, &histogram_path)?;
 
     // Step 2: find mode
     let mode = find_ntcard_mode(&histogram_path)?;
@@ -375,14 +457,14 @@ pub fn repeat_filter_and_index(
 
     // Step 3: nthits
     let nthits_prefix = work_dir.join(prefix).to_str().unwrap().to_string();
-    let rep_path = run_nthits(input_files, k, threshold, threads, &nthits_prefix)?;
+    let rep_path = run_nthits(&effective_inputs, k, threshold, threads, &nthits_prefix)?;
 
     // Step 4: physlr-makebf
     let bf_path = work_dir.join(format!("{}.k{}.bf", prefix, k));
     run_makebf(&rep_path, k, bf_size, threads, &bf_path, makebf_path)?;
 
     // Step 5: indexlr with repeat filter
-    let bx_to_mxs = run_indexlr(input_files, k, w, threads, Some(&bf_path), long_reads)?;
+    let bx_to_mxs = run_indexlr(&effective_inputs, k, w, threads, Some(&bf_path), long_reads)?;
 
     Ok(bx_to_mxs)
 }
