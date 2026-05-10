@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 
 use physlr::backbone::BackboneConfig;
+use physlr::protocol::{Protocol, ProtocolDefaults};
 use physlr::scaffold::ScaffoldConfig;
 use physlr::Timer;
 
@@ -10,9 +11,11 @@ use physlr::Timer;
 #[command(
     name = "physlr",
     version = "2.0.0",
-    about = "Physlr: Next-generation physical maps from linked reads",
-    long_about = "Physlr constructs de novo physical maps using linked reads (10X Genomics or \
-                   MGI stLFR) and uses them to scaffold genome assemblies."
+    about = "Physlr: Next-generation physical maps from linked reads and long reads",
+    long_about = "Physlr constructs de novo physical maps using linked reads (10X Genomics, \
+                   MGI stLFR) or long reads (ONT, PacBio) and uses them to scaffold genome \
+                   assemblies. Use --protocol to select the sequencing technology, or let \
+                   physlr auto-detect it from the input data."
 )]
 struct Cli {
     /// Verbosity level (0=silent, 1=info, 2=debug)
@@ -32,6 +35,8 @@ fn num_cpus() -> usize {
         .map(|n| n.get().min(16))
         .unwrap_or(1)
 }
+
+
 
 #[derive(Subcommand)]
 enum Commands {
@@ -58,6 +63,9 @@ enum Commands {
         /// Repeat Bloom filter file (from repeat-filter command). Skips repetitive k-mers.
         #[arg(long)]
         repeat_bf: Option<String>,
+        /// Sequencing protocol: auto, linked, or long
+        #[arg(long, default_value = "auto")]
+        protocol: String,
     },
 
     /// Detect repetitive k-mers and build a Bloom filter.
@@ -369,7 +377,7 @@ enum Commands {
 
     /// End-to-end pipeline: build physical map from FASTQ and scaffold a draft assembly
     Pipeline {
-        /// Input linked-read FASTQ file(s) (may be gzipped)
+        /// Input FASTQ file(s) (may be gzipped). Linked reads or long reads.
         #[arg(required = true)]
         input: Vec<String>,
         /// Draft assembly FASTA to scaffold
@@ -381,20 +389,32 @@ enum Commands {
         /// Output prefix
         #[arg(short, long, default_value = "physlr")]
         prefix: String,
+        /// Sequencing protocol: auto, linked, or long
+        #[arg(long, default_value = "auto")]
+        protocol: String,
         /// K-mer size for minimizer extraction
         #[arg(short, long, default_value_t = 32)]
         k: usize,
         /// Window size for minimizer extraction
         #[arg(short, long, default_value_t = 32)]
         w: usize,
-        /// Minimum minimizers per barcode
-        #[arg(long, default_value_t = 100)]
+        /// Number of threads for external tools (ntcard, nthits, indexlr)
+        #[arg(short, long, default_value_t = 4)]
+        threads: usize,
+        /// Bloom filter size in bytes for repeat filtering [10 GB]
+        #[arg(long, default_value_t = 10_000_000_000)]
+        bf_size: u64,
+        /// Path to physlr-makebf binary (if not in PATH)
+        #[arg(long)]
+        makebf_path: Option<String>,
+        /// Minimum minimizers per barcode (or read for long reads). 0 = use protocol default.
+        #[arg(long, default_value_t = 0)]
         min_bx_count: usize,
-        /// Maximum minimizers per barcode
-        #[arg(long, default_value_t = 5000)]
+        /// Maximum minimizers per barcode (or read for long reads). 0 = use protocol default.
+        #[arg(long, default_value_t = 0)]
         max_bx_count: usize,
-        /// Minimum shared minimizers for overlap
-        #[arg(long, default_value_t = 10)]
+        /// Minimum shared minimizers for overlap. 0 = use protocol default.
+        #[arg(long, default_value_t = 0)]
         min_overlap: u32,
         /// Edge filter percentile
         #[arg(long, default_value_t = 90.0)]
@@ -416,9 +436,9 @@ enum Commands {
         genome_size: Option<u64>,
     },
 
-    /// Run the full physical map pipeline from linked-read FASTQ files
+    /// Run the full physical map pipeline from FASTQ files (linked reads or long reads)
     PhysicalMap {
-        /// Input linked-read FASTQ file(s) (may be gzipped)
+        /// Input FASTQ file(s) (may be gzipped). Linked reads or long reads.
         #[arg(required = true)]
         input: Vec<String>,
         /// Output directory
@@ -427,20 +447,32 @@ enum Commands {
         /// Output prefix
         #[arg(short, long, default_value = "physlr")]
         prefix: String,
+        /// Sequencing protocol: auto, linked, or long
+        #[arg(long, default_value = "auto")]
+        protocol: String,
         /// K-mer size for minimizer extraction
         #[arg(short, long, default_value_t = 32)]
         k: usize,
         /// Window size for minimizer extraction
         #[arg(short, long, default_value_t = 32)]
         w: usize,
-        /// Minimum minimizers per barcode
-        #[arg(long, default_value_t = 100)]
+        /// Number of threads for external tools (ntcard, nthits, indexlr)
+        #[arg(short, long, default_value_t = 4)]
+        threads: usize,
+        /// Bloom filter size in bytes for repeat filtering [10 GB]
+        #[arg(long, default_value_t = 10_000_000_000)]
+        bf_size: u64,
+        /// Path to physlr-makebf binary (if not in PATH)
+        #[arg(long)]
+        makebf_path: Option<String>,
+        /// Minimum minimizers per barcode (or read for long reads). 0 = use protocol default.
+        #[arg(long, default_value_t = 0)]
         min_bx_count: usize,
-        /// Maximum minimizers per barcode
-        #[arg(long, default_value_t = 5000)]
+        /// Maximum minimizers per barcode (or read for long reads). 0 = use protocol default.
+        #[arg(long, default_value_t = 0)]
         max_bx_count: usize,
-        /// Minimum shared minimizers for overlap
-        #[arg(long, default_value_t = 10)]
+        /// Minimum shared minimizers for overlap. 0 = use protocol default.
+        #[arg(long, default_value_t = 0)]
         min_overlap: u32,
         /// Edge filter percentile
         #[arg(long, default_value_t = 90.0)]
@@ -516,7 +548,11 @@ fn main() -> Result<()> {
             indexer,
             threads,
             repeat_bf,
+            protocol,
         } => {
+            let proto = physlr::protocol::resolve_protocol(&protocol, &input)?;
+            timer.log(&format!("Protocol: {}", proto));
+
             // Load repeat Bloom filter if provided
             let bf = if let Some(ref bf_path) = repeat_bf {
                 timer.log(&format!("Loading repeat Bloom filter from {}", bf_path));
@@ -532,25 +568,35 @@ fn main() -> Result<()> {
             };
 
             timer.log(&format!(
-                "Indexing minimizers from {} file(s) (k={}, w={}, indexer={}, repeat_filter={})",
+                "Indexing minimizers from {} file(s) (k={}, w={}, indexer={}, repeat_filter={}, protocol={})",
                 input.len(),
                 k,
                 w,
                 indexer,
-                repeat_bf.is_some()
+                repeat_bf.is_some(),
+                proto
             ));
 
             let mut bx_to_mxs = rustc_hash::FxHashMap::default();
             for file in &input {
                 timer.log(&format!("Processing {}", file));
-                let file_mxs = if let Some(ref bf) = bf {
-                    physlr::minimizer::index_file_with_repeat_filter(file, k, w, bf)?
-                } else {
-                    match indexer.as_str() {
-                        "builtin" => physlr::minimizer::index_file(file, k, w)?,
-                        "btllib" => physlr::minimizer::index_file_btllib(file, k, w, threads)?,
-                        other => {
-                            anyhow::bail!("Unknown indexer '{}'. Use 'builtin' or 'btllib'.", other)
+                let file_mxs = match (proto, &bf) {
+                    (Protocol::Long, Some(bf)) => {
+                        physlr::minimizer::index_file_long_with_repeat_filter(file, k, w, bf)?
+                    }
+                    (Protocol::Long, None) => {
+                        physlr::minimizer::index_file_long(file, k, w)?
+                    }
+                    (Protocol::Linked, Some(bf)) => {
+                        physlr::minimizer::index_file_with_repeat_filter(file, k, w, bf)?
+                    }
+                    (Protocol::Linked, None) => {
+                        match indexer.as_str() {
+                            "builtin" => physlr::minimizer::index_file(file, k, w)?,
+                            "btllib" => physlr::minimizer::index_file_btllib(file, k, w, threads)?,
+                            other => {
+                                anyhow::bail!("Unknown indexer '{}'. Use 'builtin' or 'btllib'.", other)
+                            }
                         }
                     }
                 };
@@ -1056,8 +1102,12 @@ fn main() -> Result<()> {
             draft,
             outdir,
             prefix,
+            protocol,
             k,
             w,
+            threads,
+            bf_size,
+            makebf_path,
             min_bx_count,
             max_bx_count,
             min_overlap,
@@ -1068,31 +1118,47 @@ fn main() -> Result<()> {
             gap_size,
             genome_size,
         } => {
+            let proto = physlr::protocol::resolve_protocol(&protocol, &input)?;
+            let defaults = ProtocolDefaults::for_protocol(proto);
+            let min_bx_count = if min_bx_count == 0 { defaults.min_count } else { min_bx_count };
+            let max_bx_count = if max_bx_count == 0 { defaults.max_count } else { max_bx_count };
+            let min_overlap = if min_overlap == 0 { defaults.min_overlap } else { min_overlap };
+            let long_reads = proto == Protocol::Long;
+
             std::fs::create_dir_all(&outdir)?;
 
             // ── Phase 1: Physical map ───────────────────────────────────
             timer.log("=== Phase 1: Building physical map ===");
-
             timer.log(&format!(
-                "Step 1: Indexing minimizers from {} file(s) (k={}, w={})...",
-                input.len(),
-                k,
-                w
+                "Protocol: {} (min_count={}, max_count={}, min_overlap={})",
+                proto, min_bx_count, max_bx_count, min_overlap
             ));
-            let mut bx_to_mxs = rustc_hash::FxHashMap::default();
-            for file in &input {
-                timer.log(&format!("  Processing {}", file));
-                let file_mxs = physlr::minimizer::index_file(file, k, w)?;
-                for (bx, mxs) in file_mxs {
-                    bx_to_mxs
-                        .entry(bx)
-                        .or_insert_with(rustc_hash::FxHashSet::default)
-                        .extend(mxs);
-                }
-            }
+
+            // Steps 1-2: Repeat filtering + indexing via external tools
+            // (ntcard → find-ntcard-mode → nthits → physlr-makebf → indexlr -r)
+            timer.log("Steps 1-2: Repeat filtering and indexing via ntcard/nthits/indexlr...");
+            let work_dir = std::path::Path::new(&outdir);
+            let mut bx_to_mxs = physlr::external::repeat_filter_and_index(
+                &input,
+                k,
+                w,
+                threads,
+                work_dir,
+                &prefix,
+                bf_size,
+                3, // multiplier
+                long_reads,
+                makebf_path.as_deref(),
+            )?;
             timer.log(&format!("Indexed {} barcodes", bx_to_mxs.len()));
 
-            timer.log("Step 2: Filtering minimizers...");
+            // For long reads with homopolymer compression, we need to re-index
+            // using the built-in long-read indexer since indexlr doesn't do
+            // homopolymer compression. The BF from ntcard/nthits is still used
+            // for repeat filtering in the external indexlr call above.
+            // TODO: Add homopolymer compression support to indexlr or post-process.
+
+            timer.log("Step 3: Filtering minimizers...");
             physlr::minimizer::remove_singletons(&mut bx_to_mxs);
             physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
             physlr::minimizer::remove_singletons(&mut bx_to_mxs);
@@ -1103,20 +1169,20 @@ fn main() -> Result<()> {
             physlr::io::write_minimizers(&bx_to_mxs, &mut *writer)?;
             drop(writer);
 
-            timer.log("Step 3: Computing overlaps...");
+            timer.log("Step 4: Computing overlaps...");
             let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
 
-            timer.log("Step 4: Filtering edges...");
+            timer.log("Step 5: Filtering edges...");
             physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
 
-            timer.log("Step 5: Separating molecules...");
+            timer.log("Step 6: Separating molecules...");
             let mol_g = physlr::molecules::separate_molecules(
                 &g,
                 "bc+cc",
                 &rustc_hash::FxHashSet::default(),
             );
 
-            timer.log("Step 6: Extracting backbone paths...");
+            timer.log("Step 7: Extracting backbone paths...");
             let config = BackboneConfig {
                 prune_branch_size: prune_branches,
                 prune_bridge_size: 10,
@@ -1191,8 +1257,12 @@ fn main() -> Result<()> {
             input,
             outdir,
             prefix,
+            protocol,
             k,
             w,
+            threads,
+            bf_size,
+            makebf_path,
             min_bx_count,
             max_bx_count,
             min_overlap,
@@ -1200,28 +1270,39 @@ fn main() -> Result<()> {
             prune_branches,
             min_path_size,
         } => {
+            let proto = physlr::protocol::resolve_protocol(&protocol, &input)?;
+            let defaults = ProtocolDefaults::for_protocol(proto);
+            let min_bx_count = if min_bx_count == 0 { defaults.min_count } else { min_bx_count };
+            let max_bx_count = if max_bx_count == 0 { defaults.max_count } else { max_bx_count };
+            let min_overlap = if min_overlap == 0 { defaults.min_overlap } else { min_overlap };
+            let long_reads = proto == Protocol::Long;
+
             std::fs::create_dir_all(&outdir)?;
 
             timer.log(&format!(
-                "Step 1: Indexing minimizers from {} file(s) (k={}, w={})...",
-                input.len(),
-                k,
-                w
+                "Protocol: {} (min_count={}, max_count={}, min_overlap={})",
+                proto, min_bx_count, max_bx_count, min_overlap
             ));
-            let mut bx_to_mxs = rustc_hash::FxHashMap::default();
-            for file in &input {
-                timer.log(&format!("  Processing {}", file));
-                let file_mxs = physlr::minimizer::index_file(file, k, w)?;
-                for (bx, mxs) in file_mxs {
-                    bx_to_mxs
-                        .entry(bx)
-                        .or_insert_with(rustc_hash::FxHashSet::default)
-                        .extend(mxs);
-                }
-            }
+
+            // Steps 1-2: Repeat filtering + indexing via external tools
+            // (ntcard → find-ntcard-mode → nthits → physlr-makebf → indexlr -r)
+            timer.log("Steps 1-2: Repeat filtering and indexing via ntcard/nthits/indexlr...");
+            let work_dir = std::path::Path::new(&outdir);
+            let mut bx_to_mxs = physlr::external::repeat_filter_and_index(
+                &input,
+                k,
+                w,
+                threads,
+                work_dir,
+                &prefix,
+                bf_size,
+                3, // multiplier
+                long_reads,
+                makebf_path.as_deref(),
+            )?;
             timer.log(&format!("Indexed {} barcodes", bx_to_mxs.len()));
 
-            timer.log("Step 2: Filtering minimizers...");
+            timer.log("Step 3: Filtering minimizers...");
 
             physlr::minimizer::remove_singletons(&mut bx_to_mxs);
             physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
@@ -1234,10 +1315,10 @@ fn main() -> Result<()> {
             drop(writer);
             timer.log(&format!("Wrote filtered minimizers to {}", filtered_path));
 
-            timer.log("Step 2: Computing overlaps...");
+            timer.log("Step 4: Computing overlaps...");
             let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
 
-            timer.log("Step 3: Filtering edges...");
+            timer.log("Step 5: Filtering edges...");
             physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
 
             let overlap_path = format!("{}/{}.overlap.tsv", outdir, prefix);
@@ -1246,7 +1327,7 @@ fn main() -> Result<()> {
             drop(writer);
             timer.log(&format!("Wrote overlap graph to {}", overlap_path));
 
-            timer.log("Step 4: Separating molecules...");
+            timer.log("Step 6: Separating molecules (chimeric read detection)...");
             let mol_g = physlr::molecules::separate_molecules(
                 &g,
                 "bc+cc",
@@ -1258,7 +1339,7 @@ fn main() -> Result<()> {
             physlr::io::write_graph_tsv(&mol_g, &mut *writer)?;
             drop(writer);
 
-            timer.log("Step 5: Extracting backbone paths...");
+            timer.log("Step 7: Extracting backbone paths...");
             let config = BackboneConfig {
                 prune_branch_size: prune_branches,
                 prune_bridge_size: 10,
