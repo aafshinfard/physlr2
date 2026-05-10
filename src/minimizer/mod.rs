@@ -61,7 +61,76 @@ pub fn count_minimizers(bx_to_mxs: &FxHashMap<String, FxHashSet<u64>>) -> FxHash
 
 /// Remove singleton minimizers (those occurring in only one barcode).
 /// Returns the number of singletons removed.
+///
+/// Uses a two-layer cascading Bloom filter for memory efficiency:
+/// - Layer 1 (`first_occ`): tracks minimizers seen at least once
+/// - Layer 2 (`second_occ`): tracks minimizers seen at least twice
+///
+/// A minimizer in `first_occ` but NOT in `second_occ` is a singleton.
+/// This uses ~600 MB for human-scale data instead of ~6 GB for a HashMap.
+///
+/// False positives in `second_occ` mean some singletons are kept (harmless —
+/// they just won't contribute to overlaps). No non-singletons are lost.
 pub fn remove_singletons(bx_to_mxs: &mut FxHashMap<String, FxHashSet<u64>>) -> usize {
+    // Count total minimizer occurrences to size the BFs
+    let mut total_mxs = 0u64;
+    for mxs in bx_to_mxs.values() {
+        total_mxs += mxs.len() as u64;
+    }
+
+    if total_mxs == 0 {
+        return 0;
+    }
+
+    // Size BFs for ~1% FPR: ~10 bits per element, 3 hash functions
+    // Each layer needs to hold up to `total_mxs` distinct elements
+    let bits_per_element = 10u64;
+    let n_hashes = 3u32;
+    let bf_size_bytes = (total_mxs * bits_per_element / 8).max(1024);
+
+    log::info!(
+        "Cascading BF singleton removal: {} total minimizer occurrences, BF size={:.1} MB each",
+        total_mxs,
+        bf_size_bytes as f64 / 1e6
+    );
+
+    // Pass 1: populate the two BF layers
+    let mut first_occ = crate::repeat::BloomFilter::new(bf_size_bytes, n_hashes);
+    let mut second_occ = crate::repeat::BloomFilter::new(bf_size_bytes, n_hashes);
+
+    for mxs in bx_to_mxs.values() {
+        for &mx in mxs {
+            if first_occ.contains(mx) {
+                second_occ.insert(mx);
+            } else {
+                first_occ.insert(mx);
+            }
+        }
+    }
+
+    log::info!(
+        "Cascading BF: first_occ FPR={:.4}%, second_occ FPR={:.4}%",
+        first_occ.fpr() * 100.0,
+        second_occ.fpr() * 100.0
+    );
+
+    // Pass 2: remove minimizers NOT in second_occ (singletons)
+    let mut n_removed = 0usize;
+    for mxs in bx_to_mxs.values_mut() {
+        let before = mxs.len();
+        mxs.retain(|&mx| second_occ.contains(mx));
+        n_removed += before - mxs.len();
+    }
+
+    log::info!("Removed {} singleton minimizers", n_removed);
+    n_removed
+}
+
+/// Remove singleton minimizers using exact HashMap counting.
+/// This is the original implementation — accurate but uses more memory.
+/// Kept as a fallback for small datasets or when exact counts are needed.
+#[allow(dead_code)]
+pub fn remove_singletons_exact(bx_to_mxs: &mut FxHashMap<String, FxHashSet<u64>>) -> usize {
     let counts = count_minimizers(bx_to_mxs);
     let singletons: FxHashSet<u64> = counts
         .iter()
@@ -75,7 +144,7 @@ pub fn remove_singletons(bx_to_mxs: &mut FxHashMap<String, FxHashSet<u64>>) -> u
     }
 
     log::info!(
-        "Removed {} singleton minimizers of {} total",
+        "Removed {} singleton minimizers of {} total (exact)",
         n_singletons,
         counts.len()
     );
@@ -983,6 +1052,47 @@ mod tests {
             assert!(!mxs.contains(&20));
             assert!(!mxs.contains(&30));
         }
+    }
+
+    #[test]
+    fn test_remove_singletons_bloom_vs_exact() {
+        // Verify cascading BF produces same results as exact method on a larger dataset
+        let mut bx_bloom: FxHashMap<String, FxHashSet<u64>> = FxHashMap::default();
+        let mut bx_exact: FxHashMap<String, FxHashSet<u64>> = FxHashMap::default();
+
+        // Create 100 barcodes with overlapping minimizers
+        // Minimizers 0-49 appear in multiple barcodes, 1000+ are singletons
+        for i in 0..100u64 {
+            let mut mxs = FxHashSet::default();
+            // Shared minimizers (appear in ~10 barcodes each)
+            for j in 0..5 {
+                mxs.insert((i / 10) * 5 + j); // 0-49
+            }
+            // Singleton minimizer unique to this barcode
+            mxs.insert(1000 + i);
+            bx_bloom.insert(format!("bx_{}", i), mxs.clone());
+            bx_exact.insert(format!("bx_{}", i), mxs);
+        }
+
+        let removed_bloom = remove_singletons(&mut bx_bloom);
+        let removed_exact = remove_singletons_exact(&mut bx_exact);
+
+        // Both should remove the same singletons
+        assert_eq!(removed_bloom, removed_exact,
+            "bloom removed {} vs exact removed {}", removed_bloom, removed_exact);
+
+        // Verify same minimizers remain
+        for key in bx_bloom.keys() {
+            assert_eq!(bx_bloom[key], bx_exact[key],
+                "mismatch for barcode {}", key);
+        }
+    }
+
+    #[test]
+    fn test_remove_singletons_empty() {
+        let mut bx: FxHashMap<String, FxHashSet<u64>> = FxHashMap::default();
+        let removed = remove_singletons(&mut bx);
+        assert_eq!(removed, 0);
     }
 
     // -----------------------------------------------------------------------
