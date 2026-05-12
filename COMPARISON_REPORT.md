@@ -16,13 +16,13 @@ Comparison of physical maps produced by the original Physlr (C++ and Python) and
 | NA12878 | stLFR | [GIAB FTP](https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/NA12878/stLFR/) |
 | NA24143 | stLFR | [GIAB FTP](https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG004_NA24143_mother/stLFR/) |
 
-Reference: GRCh38 (no alt analysis set). Single compute node, 16 CPUs, 200 GB RAM.
+Reference: GRCh38 (no alt analysis set). Benchmarked on a single compute node, 16 CPUs, 200 GB RAM.
 
 ---
 
 ## Runtime and Memory
 
-End-to-end pipeline runtime for both tools. Preprocessing steps (gray: ntcard, nthits, makebf, indexlr) use the same third-party tools and are shared between both implementations. The Physlr-specific steps (blue/orange: filter-minimizers through map-paf) are where Physlr2 differs.
+End-to-end pipeline runtime for both tools. The initial steps (gray: ntcard, nthits, makebf, indexlr) are untouched and shared between both implementations. The rewritten steps (blue/orange: filter-minimizers through map-paf) are where Physlr2 differs.
 
 Physlr2 v0.26 uses a cascading Bloom filter for singleton removal in filter-minimizers, reducing memory by ~40% compared to the exact HashMap approach. The molecules step uses deterministic binning (seed=42).
 
@@ -42,7 +42,7 @@ Physlr-specific steps only (molecules + backbone + map-paf):
 
 ![Peak Memory per Step](results/comparison/memory_full.png)
 
-Peak memory is dominated by the overlap step (~116–121 GB) and filter-minimizers (~63–121 GB). The Physlr-specific steps (molecules, backbone, merge-paths) use 4–17 GB.
+Peak memory is dominated by the overlap step (~116–121 GB) and filter-minimizers (~63–121 GB). The rewritten steps (molecules, backbone, merge-paths) use 4–17 GB.
 
 ---
 
