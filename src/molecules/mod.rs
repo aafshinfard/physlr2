@@ -35,8 +35,8 @@ pub struct MoleculeParams {
     pub skip_small: usize,
     pub bin_max_size: usize,
     pub merge_cutoff: i64,
-    /// Optional seed for deterministic random binning. None = non-deterministic.
-    pub seed: Option<u64>,
+    /// Seed for deterministic random binning.
+    pub seed: u64,
 }
 
 impl Default for MoleculeParams {
@@ -46,7 +46,7 @@ impl Default for MoleculeParams {
             skip_small: 10,
             bin_max_size: 50,
             merge_cutoff: 20,
-            seed: None,
+            seed: 42,
         }
     }
 }
@@ -1063,7 +1063,7 @@ fn mat_mul_f32(a: &[f32], b: &[f32], n: usize) -> Vec<f32> {
 // Random binning (Fisher-Yates shuffle, matching original Python random.shuffle)
 // ---------------------------------------------------------------------------
 
-fn bin_local(nodes: &[usize], max_size: usize, seed: Option<u64>) -> Vec<Vec<usize>> {
+fn bin_local(nodes: &[usize], max_size: usize, seed: u64) -> Vec<Vec<usize>> {
     use rand::seq::SliceRandom;
     use rand::SeedableRng;
 
@@ -1077,18 +1077,10 @@ fn bin_local(nodes: &[usize], max_size: usize, seed: Option<u64>) -> Vec<Vec<usi
     }
 
     let mut shuffled = nodes.to_vec();
-    match seed {
-        Some(s) => {
-            // Deterministic: seed derived from user seed + first node for per-call variation
-            let local_seed = s.wrapping_add(nodes.first().copied().unwrap_or(0) as u64);
-            let mut rng = rand::rngs::StdRng::seed_from_u64(local_seed);
-            shuffled.shuffle(&mut rng);
-        }
-        None => {
-            let mut rng = rand::rng();
-            shuffled.shuffle(&mut rng);
-        }
-    }
+    // Deterministic: seed derived from user seed + first node for per-call variation
+    let local_seed = seed.wrapping_add(nodes.first().copied().unwrap_or(0) as u64);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(local_seed);
+    shuffled.shuffle(&mut rng);
 
     let (size, leftover) = (n / bins_count, n % bins_count);
     let mut bins: Vec<Vec<usize>> = Vec::with_capacity(bins_count);
@@ -1482,7 +1474,7 @@ mod tests {
     fn test_bin_small_set() {
         // 10 nodes, max_size=50 → 1 bin (no splitting)
         let nodes: Vec<usize> = (0..10).collect();
-        let result = bin_local(&nodes, 50, None);
+        let result = bin_local(&nodes, 50, 42);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 10);
     }
@@ -1491,7 +1483,7 @@ mod tests {
     fn test_bin_exact_split() {
         // 100 nodes, max_size=50 → bins_count = 1 + 100/50 = 3
         let nodes: Vec<usize> = (0..100).collect();
-        let result = bin_local(&nodes, 50, None);
+        let result = bin_local(&nodes, 50, 42);
         assert_eq!(result.len(), 3);
         let total: usize = result.iter().map(|b| b.len()).sum();
         assert_eq!(total, 100);
@@ -1501,7 +1493,7 @@ mod tests {
     fn test_bin_random_covers_all_nodes() {
         // Random binning should still cover all nodes, just in random order
         let nodes: Vec<usize> = (0..200).collect();
-        let result = bin_local(&nodes, 50, None);
+        let result = bin_local(&nodes, 50, 42);
         assert_eq!(result.len(), 5); // 1 + 200/50 = 5 bins
         let mut all: Vec<usize> = result.into_iter().flatten().collect();
         all.sort_unstable();
@@ -1511,7 +1503,7 @@ mod tests {
     #[test]
     fn test_bin_all_nodes_present() {
         let nodes: Vec<usize> = (0..73).collect();
-        let result = bin_local(&nodes, 50, None);
+        let result = bin_local(&nodes, 50, 42);
         let mut all: Vec<usize> = result.into_iter().flatten().collect();
         all.sort_unstable();
         assert_eq!(all, nodes);
@@ -1519,7 +1511,7 @@ mod tests {
 
     #[test]
     fn test_bin_empty() {
-        let result = bin_local(&[], 50, None);
+        let result = bin_local(&[], 50, 42);
         assert!(result.is_empty());
     }
 

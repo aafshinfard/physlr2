@@ -165,9 +165,9 @@ enum Commands {
         /// Merge cutoff: min cross-edges to merge communities (-1 = no merge) [20]
         #[arg(long, default_value_t = 20)]
         merge_cutoff: i64,
-        /// Random seed for deterministic binning (omit for non-deterministic)
-        #[arg(long)]
-        seed: Option<u64>,
+        /// Random seed for deterministic binning [42]
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
     },
 
     /// Split minimizers by molecule: assign each barcode's minimizers to its
@@ -781,7 +781,7 @@ fn main() -> Result<()> {
                 skip_small,
                 bin_max_size,
                 merge_cutoff,
-                seed: None,
+                seed: 42,
             };
 
             let target_barcodes: Vec<String> = if barcodes == "top5" {
