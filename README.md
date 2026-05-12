@@ -43,16 +43,15 @@ Physlr 2 takes linked-read sequencing data and constructs ordered physical maps 
 1. **Physical map construction** — builds an ordered map of molecules along each chromosome from linked-read barcodes.
 2. **Assembly scaffolding** — uses the physical map to order and orient contigs from a draft genome assembly.
 
-**Optional: merge-paths** — a post-processing step that identifies non-backbone "bridge" molecules sharing minimizers with endpoints of adjacent backbone paths, providing evidence to merge them. On human stLFR data (NA12878 + NA24143), this adds 9 true-positive merges with zero false positives.
+**Optional: merge-paths** — a post-processing step that identifies non-backbone "bridge" molecules sharing minimizers with endpoints of adjacent backbone paths, providing evidence to merge them. On human stLFR data (NA24143), this adds 9 true-positive merges with zero false positives.
 
 ### Results
 
-Backbone paths mapped to the GRCh38 reference genome for two human cell lines:
+Backbone paths mapped to the GRCh38 reference genome (NA24143, stLFR):
 
-| | NA12878 (stLFR) | NA24143 (stLFR) |
-|:---|:---:|:---:|
-| **Backbone** | [<img src="results/na12878_backbone_v023.png" height="200">](results/na12878_backbone_v023.png) | [<img src="results/na24143_backbone_v023.png" height="200">](results/na24143_backbone_v023.png) |
-| **Reference** | [<img src="results/na12878_reference_v023.png" height="200">](results/na12878_reference_v023.png) | [<img src="results/na24143_reference_v023.png" height="200">](results/na24143_reference_v023.png) |
+| Backbone | Reference |
+|:---:|:---:|
+| [<img src="results/comparison/v026_na24143_backbone.png" height="250">](results/comparison/v026_na24143_backbone.png) | [<img src="results/comparison/v026_na24143_reference.png" height="250">](results/comparison/v026_na24143_reference.png) |
 
 <sub>Backbone view: paths colored by reference chromosome. Reference view: chromosomes colored by backbone path. Click to enlarge.</sub>
 
@@ -343,7 +342,7 @@ Merges adjacent backbone paths using bridge molecule evidence. Defaults optimize
 
 ## Reproducing Results
 
-See **[REPRODUCING.md](REPRODUCING.md)** for step-by-step instructions to reproduce the NA12878 and NA24143 results shown above, including data download links and the automated pipeline script.
+See **[REPRODUCING.md](REPRODUCING.md)** for step-by-step instructions to reproduce the NA24143 results shown above, including data download links and the automated pipeline script.
 
 ---
 
