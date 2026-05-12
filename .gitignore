@@ -32,3 +32,6 @@ __pycache__/
 
 # Reports
 *.html
+-e 
+# Ona skills (environment-specific)
+.ona/

@@ -35,6 +35,8 @@ pub struct MoleculeParams {
     pub skip_small: usize,
     pub bin_max_size: usize,
     pub merge_cutoff: i64,
+    /// Optional seed for deterministic random binning. None = non-deterministic.
+    pub seed: Option<u64>,
 }
 
 impl Default for MoleculeParams {
@@ -44,6 +46,7 @@ impl Default for MoleculeParams {
             skip_small: 10,
             bin_max_size: 50,
             merge_cutoff: 20,
+            seed: None,
         }
     }
 }
@@ -247,7 +250,7 @@ pub fn trace_molecules(
                     Strategy::Bc => bc_local(&lg, component),
                     Strategy::K3 => k3_local(&lg, component),
                     Strategy::K3Bin => {
-                        let bins = bin_local(component, params.bin_max_size);
+                        let bins = bin_local(component, params.bin_max_size, params.seed);
                         let mut clusters = Vec::new();
                         for bin in &bins {
                             clusters.extend(k3_local(&lg, bin));
@@ -262,7 +265,7 @@ pub fn trace_molecules(
                         params.skip_small,
                     ),
                     Strategy::SqcosBin => {
-                        let bins = bin_local(component, params.bin_max_size);
+                        let bins = bin_local(component, params.bin_max_size, params.seed);
                         let mut clusters = Vec::new();
                         for bin in &bins {
                             clusters.extend(sqcos_local(
@@ -293,7 +296,7 @@ pub fn trace_molecules(
                         let mut all_result = Vec::new();
                         let mut total_clusters = 0;
                         for (bci, bc_comp) in bc_comps.iter().enumerate() {
-                            let bins = bin_local(bc_comp, params.bin_max_size);
+                            let bins = bin_local(bc_comp, params.bin_max_size, params.seed);
                             let mut clusters = Vec::new();
                             for bin in &bins {
                                 let inner_bcs = bc_local(&lg, bin);
@@ -579,7 +582,7 @@ fn determine_molecules(
                     new_communities.extend(k3_local(&lg, component));
                 }
                 Strategy::K3Bin => {
-                    let bins = bin_local(component, params.bin_max_size);
+                    let bins = bin_local(component, params.bin_max_size, params.seed);
                     let mut clusters = Vec::new();
                     for bin in &bins {
                         clusters.extend(k3_local(&lg, bin));
@@ -596,7 +599,7 @@ fn determine_molecules(
                     ));
                 }
                 Strategy::SqcosBin => {
-                    let bins = bin_local(component, params.bin_max_size);
+                    let bins = bin_local(component, params.bin_max_size, params.seed);
                     let mut clusters = Vec::new();
                     for bin in &bins {
                         clusters.extend(sqcos_local(
@@ -1060,8 +1063,9 @@ fn mat_mul_f32(a: &[f32], b: &[f32], n: usize) -> Vec<f32> {
 // Random binning (Fisher-Yates shuffle, matching original Python random.shuffle)
 // ---------------------------------------------------------------------------
 
-fn bin_local(nodes: &[usize], max_size: usize) -> Vec<Vec<usize>> {
+fn bin_local(nodes: &[usize], max_size: usize, seed: Option<u64>) -> Vec<Vec<usize>> {
     use rand::seq::SliceRandom;
+    use rand::SeedableRng;
 
     let n = nodes.len();
     if n == 0 {
@@ -1072,11 +1076,19 @@ fn bin_local(nodes: &[usize], max_size: usize) -> Vec<Vec<usize>> {
         return vec![nodes.to_vec()];
     }
 
-    // Random shuffle matching original Python's random.shuffle behavior.
-    // Uses thread-local RNG for parallel safety.
     let mut shuffled = nodes.to_vec();
-    let mut rng = rand::rng();
-    shuffled.shuffle(&mut rng);
+    match seed {
+        Some(s) => {
+            // Deterministic: seed derived from user seed + first node for per-call variation
+            let local_seed = s.wrapping_add(nodes.first().copied().unwrap_or(0) as u64);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(local_seed);
+            shuffled.shuffle(&mut rng);
+        }
+        None => {
+            let mut rng = rand::rng();
+            shuffled.shuffle(&mut rng);
+        }
+    }
 
     let (size, leftover) = (n / bins_count, n % bins_count);
     let mut bins: Vec<Vec<usize>> = Vec::with_capacity(bins_count);
@@ -1153,7 +1165,7 @@ fn distributed_local(lg: &LocalGraph, nodes: &[usize], params: &MoleculeParams) 
     let mut result = Vec::new();
     for bc_comp in &bc_components {
         // Step 2: random binning of each bc component
-        let bins = bin_local(bc_comp, params.bin_max_size);
+        let bins = bin_local(bc_comp, params.bin_max_size, params.seed);
 
         // Step 3+4: for each bin, bc again, then k3
         let mut clusters = Vec::new();
@@ -1470,7 +1482,7 @@ mod tests {
     fn test_bin_small_set() {
         // 10 nodes, max_size=50 → 1 bin (no splitting)
         let nodes: Vec<usize> = (0..10).collect();
-        let result = bin_local(&nodes, 50);
+        let result = bin_local(&nodes, 50, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 10);
     }
@@ -1479,7 +1491,7 @@ mod tests {
     fn test_bin_exact_split() {
         // 100 nodes, max_size=50 → bins_count = 1 + 100/50 = 3
         let nodes: Vec<usize> = (0..100).collect();
-        let result = bin_local(&nodes, 50);
+        let result = bin_local(&nodes, 50, None);
         assert_eq!(result.len(), 3);
         let total: usize = result.iter().map(|b| b.len()).sum();
         assert_eq!(total, 100);
@@ -1489,7 +1501,7 @@ mod tests {
     fn test_bin_random_covers_all_nodes() {
         // Random binning should still cover all nodes, just in random order
         let nodes: Vec<usize> = (0..200).collect();
-        let result = bin_local(&nodes, 50);
+        let result = bin_local(&nodes, 50, None);
         assert_eq!(result.len(), 5); // 1 + 200/50 = 5 bins
         let mut all: Vec<usize> = result.into_iter().flatten().collect();
         all.sort_unstable();
@@ -1499,7 +1511,7 @@ mod tests {
     #[test]
     fn test_bin_all_nodes_present() {
         let nodes: Vec<usize> = (0..73).collect();
-        let result = bin_local(&nodes, 50);
+        let result = bin_local(&nodes, 50, None);
         let mut all: Vec<usize> = result.into_iter().flatten().collect();
         all.sort_unstable();
         assert_eq!(all, nodes);
@@ -1507,7 +1519,7 @@ mod tests {
 
     #[test]
     fn test_bin_empty() {
-        let result = bin_local(&[], 50);
+        let result = bin_local(&[], 50, None);
         assert!(result.is_empty());
     }
 
