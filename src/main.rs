@@ -437,6 +437,10 @@ enum Commands {
         /// Expected genome size in bp (optional, for NG50 reporting only)
         #[arg(short = 'g', long)]
         genome_size: Option<u64>,
+        /// Reference genome FASTA (optional). When provided, maps backbones
+        /// to the reference and generates PAF + plots with genomic coordinates.
+        #[arg(long)]
+        reference: Option<String>,
     },
 
     /// Run the full physical map pipeline from linked-read FASTQ files
@@ -474,6 +478,10 @@ enum Commands {
         /// Minimum path length
         #[arg(long, default_value_t = 50)]
         min_path_size: usize,
+        /// Reference genome FASTA (optional). When provided, maps backbones
+        /// to the reference and generates PAF + plots with genomic coordinates.
+        #[arg(long)]
+        reference: Option<String>,
     },
 
     /// Scaffold a draft assembly using a physical map produced by `physical-map`
@@ -1109,6 +1117,7 @@ fn main() -> Result<()> {
             min_map_score,
             gap_size,
             genome_size,
+            reference,
         } => {
             std::fs::create_dir_all(&outdir)?;
 
@@ -1226,6 +1235,102 @@ fn main() -> Result<()> {
             writeln!(stdout, "\n=== After Scaffolding ===")?;
             physlr::report::write_metrics_tsv(&after_metrics, "physlr", &mut stdout)?;
 
+            // Optional: map backbones to reference and generate plots
+            if let Some(ref ref_path) = reference {
+                timer.log(&format!(
+                    "=== Phase 3: Reference mapping and plotting ({}) ===",
+                    ref_path
+                ));
+
+                let ref_mxs = physlr::minimizer::index_file_ordered(ref_path, k, w)?;
+                timer.log(&format!("Indexed {} reference sequences", ref_mxs.len()));
+
+                let ref_tsv_path = format!("{}/{}.ref.tsv", outdir, prefix);
+                let mut writer = physlr::io::open_writer(&ref_tsv_path)?;
+                physlr::minimizer::write_minimizer_list_tsv(&ref_mxs, &mut *writer)?;
+                drop(writer);
+
+                let pos_path = format!("{}/{}.positions.tsv", outdir, prefix);
+                let mut writer = physlr::io::open_writer(&pos_path)?;
+                physlr::minimizer::index_positions(ref_path, k, w, 100, &mut *writer)?;
+                drop(writer);
+                timer.log(&format!("Wrote position map to {}", pos_path));
+
+                let mx_to_pos =
+                    physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
+                let paf_records =
+                    physlr::map::map_paf(&ref_mxs, &mx_to_pos, &backbones, 10, 1.5);
+
+                let paf_path = format!("{}/{}.backbone.paf", outdir, prefix);
+                let mut writer = physlr::io::open_writer(&paf_path)?;
+                for r in &paf_records {
+                    r.write_to(&mut *writer)?;
+                }
+                drop(writer);
+                timer.log(&format!(
+                    "Wrote {} PAF records to {}",
+                    paf_records.len(),
+                    paf_path
+                ));
+
+                timer.log("Generating plots...");
+                let plot_prefix = format!("{}/{}", outdir, prefix);
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                let script_candidates = [
+                    exe_dir
+                        .as_ref()
+                        .map(|d| d.join("plotpaf.py"))
+                        .unwrap_or_default(),
+                    exe_dir
+                        .as_ref()
+                        .map(|d| d.join("../scripts/plotpaf.py"))
+                        .unwrap_or_default(),
+                    std::path::PathBuf::from("scripts/plotpaf.py"),
+                    std::path::PathBuf::from("plotpaf.py"),
+                ];
+                let plot_script = script_candidates.iter().find(|p| p.exists());
+                if let Some(script) = plot_script {
+                    let status = std::process::Command::new("python3")
+                        .arg(script)
+                        .arg(&paf_path)
+                        .arg(&plot_prefix)
+                        .arg("--positions")
+                        .arg(&pos_path)
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            timer.log("Plots generated successfully");
+                        }
+                        Ok(s) => {
+                            eprintln!(
+                                "Warning: plotting script exited with {}",
+                                s.code().unwrap_or(-1)
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: could not run plotting script: {}. \
+                                 You can run it manually:\n  \
+                                 python3 {} {} {} --positions {}",
+                                e,
+                                script.display(),
+                                paf_path,
+                                plot_prefix,
+                                pos_path
+                            );
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "Note: plotpaf.py not found. To generate plots, run:\n  \
+                         python3 scripts/plotpaf.py {} {} --positions {}",
+                        paf_path, plot_prefix, pos_path
+                    );
+                }
+            }
+
             timer.log("Pipeline complete");
         }
 
@@ -1241,6 +1346,7 @@ fn main() -> Result<()> {
             edge_percentile,
             prune_branches,
             min_path_size,
+            reference,
         } => {
             std::fs::create_dir_all(&outdir)?;
 
@@ -1276,10 +1382,10 @@ fn main() -> Result<()> {
             drop(writer);
             timer.log(&format!("Wrote filtered minimizers to {}", filtered_path));
 
-            timer.log("Step 2: Computing overlaps...");
+            timer.log("Step 3: Computing overlaps...");
             let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
 
-            timer.log("Step 3: Filtering edges...");
+            timer.log("Step 4: Filtering edges...");
             physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
 
             let overlap_path = format!("{}/{}.overlap.tsv", outdir, prefix);
@@ -1288,7 +1394,7 @@ fn main() -> Result<()> {
             drop(writer);
             timer.log(&format!("Wrote overlap graph to {}", overlap_path));
 
-            timer.log("Step 4: Separating molecules...");
+            timer.log("Step 5: Separating molecules...");
             let mol_g = physlr::molecules::separate_molecules(
                 &g,
                 "bc+cc",
@@ -1300,7 +1406,7 @@ fn main() -> Result<()> {
             physlr::io::write_graph_tsv(&mol_g, &mut *writer)?;
             drop(writer);
 
-            timer.log("Step 5: Extracting backbone paths...");
+            timer.log("Step 6: Extracting backbone paths...");
             let config = BackboneConfig {
                 prune_branch_size: prune_branches,
                 prune_bridge_size: 10,
@@ -1329,6 +1435,108 @@ fn main() -> Result<()> {
                 "Physical map complete: {} paths, {} total molecules",
                 metrics.num_paths, metrics.total_molecules
             ));
+
+            // Optional: map backbones to reference and generate plots
+            if let Some(ref ref_path) = reference {
+                timer.log(&format!(
+                    "Step 7: Mapping backbones to reference {}...",
+                    ref_path
+                ));
+
+                // Index reference minimizers (ordered, for PAF mapping)
+                let ref_mxs = physlr::minimizer::index_file_ordered(ref_path, k, w)?;
+                timer.log(&format!("Indexed {} reference sequences", ref_mxs.len()));
+
+                // Write reference minimizer TSV (needed for reproducibility)
+                let ref_tsv_path = format!("{}/{}.ref.tsv", outdir, prefix);
+                let mut writer = physlr::io::open_writer(&ref_tsv_path)?;
+                physlr::minimizer::write_minimizer_list_tsv(&ref_mxs, &mut *writer)?;
+                drop(writer);
+
+                // Generate position map for coordinate conversion
+                let pos_path = format!("{}/{}.positions.tsv", outdir, prefix);
+                let mut writer = physlr::io::open_writer(&pos_path)?;
+                physlr::minimizer::index_positions(ref_path, k, w, 100, &mut *writer)?;
+                drop(writer);
+                timer.log(&format!("Wrote position map to {}", pos_path));
+
+                // Map reference to backbone paths (PAF)
+                let mx_to_pos =
+                    physlr::map::index_backbone_minimizers(&paths, &bx_to_mxs);
+                let paf_records =
+                    physlr::map::map_paf(&ref_mxs, &mx_to_pos, &paths, 10, 1.5);
+
+                let paf_path = format!("{}/{}.backbone.paf", outdir, prefix);
+                let mut writer = physlr::io::open_writer(&paf_path)?;
+                for r in &paf_records {
+                    r.write_to(&mut *writer)?;
+                }
+                drop(writer);
+                timer.log(&format!(
+                    "Wrote {} PAF records to {}",
+                    paf_records.len(),
+                    paf_path
+                ));
+
+                // Run plotting script
+                timer.log("Step 8: Generating plots...");
+                let plot_prefix = format!("{}/{}", outdir, prefix);
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                // Look for plotpaf.py next to the binary, or in scripts/
+                let script_candidates = [
+                    exe_dir
+                        .as_ref()
+                        .map(|d| d.join("plotpaf.py"))
+                        .unwrap_or_default(),
+                    exe_dir
+                        .as_ref()
+                        .map(|d| d.join("../scripts/plotpaf.py"))
+                        .unwrap_or_default(),
+                    std::path::PathBuf::from("scripts/plotpaf.py"),
+                    std::path::PathBuf::from("plotpaf.py"),
+                ];
+                let plot_script = script_candidates.iter().find(|p| p.exists());
+                if let Some(script) = plot_script {
+                    let status = std::process::Command::new("python3")
+                        .arg(script)
+                        .arg(&paf_path)
+                        .arg(&plot_prefix)
+                        .arg("--positions")
+                        .arg(&pos_path)
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            timer.log("Plots generated successfully");
+                        }
+                        Ok(s) => {
+                            eprintln!(
+                                "Warning: plotting script exited with {}",
+                                s.code().unwrap_or(-1)
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: could not run plotting script: {}. \
+                                 You can run it manually:\n  \
+                                 python3 {} {} {} --positions {}",
+                                e,
+                                script.display(),
+                                paf_path,
+                                plot_prefix,
+                                pos_path
+                            );
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "Note: plotpaf.py not found. To generate plots, run:\n  \
+                         python3 scripts/plotpaf.py {} {} --positions {}",
+                        paf_path, plot_prefix, pos_path
+                    );
+                }
+            }
         }
 
         Commands::Scaffolds {

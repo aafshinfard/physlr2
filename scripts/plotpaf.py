@@ -4,13 +4,15 @@
 Python port of plotpaf_png.R with identical chaining logic and polished visuals.
 Only dependency: matplotlib.
 
-Usage: plotpaf_png.py <input.paf> <output_prefix> [--caption] [--positions <positions.tsv>]
-  Produces: <output_prefix>.backbone.png and <output_prefix>.reference.png
-  --caption:   show input file path at bottom of each plot (off by default)
-  --positions: minimizer-index-to-bp position map TSV from `physlr index-positions`.
-               When provided, the reference plot x-axis shows genomic bp coordinates
-               and centromere markers are placed accurately.
+Usage: plotpaf.py <input.paf> <output_prefix> [options]
+  --reference <genome.fa>   Reference FASTA — auto-generates position map via physlr
+  --positions <pos.tsv>     Pre-computed position map (from physlr index-positions)
+  --caption                 Show input file path at bottom of each plot
+
+Produces: <output_prefix>.backbone.png and <output_prefix>.reference.png
+When --reference or --positions is provided, both plots use genomic bp coordinates.
 """
+import os
 import sys
 from collections import Counter, defaultdict
 from bisect import bisect_right
@@ -308,17 +310,63 @@ def _make_legend(ax, handles, labels, title, fontsize=9, expand=False):
     return leg
 
 # ---------------------------------------------------------------------------
-# Plot 1: Backbone coverage (node positions on x-axis)
+# Plot 1: Backbone coverage
 # ---------------------------------------------------------------------------
 
-def plot_backbone(chained, output_prefix, show_caption, input_paf):
-    # Tname ordering: descending Tlength, then ascending Tname
+def plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=None):
+    # Collect all backbone names and their molecule counts
     tinfo = {}
     for s in chained:
         t = s['Tname']
         if t not in tinfo or s['Tlength'] > tinfo[t]:
             tinfo[t] = s['Tlength']
-    tnames = sorted(tinfo, key=lambda t: (-tinfo[t], t))
+    all_tnames = list(tinfo.keys())
+
+    # Qlength from PAF (for scaling in mx_to_bp)
+    qlens_mx = {}
+    for s in chained:
+        q = s['Qname']
+        qlens_mx[q] = max(qlens_mx.get(q, 0), s['Qlength'])
+
+    use_genomic = pos_map is not None
+
+    def to_bp(qname, mx_val):
+        """Convert minimizer index to bp using position map, or return as-is."""
+        if not use_genomic or qname not in pos_map:
+            return mx_val
+        mx_indices, bp_positions, map_total, seq_len = pos_map[qname]
+        return mx_to_bp(mx_val, mx_indices, bp_positions,
+                        paf_qlength=qlens_mx.get(qname), map_total=map_total)
+
+    # Build bp coordinate mapping for each backbone.
+    # Each chained segment maps a reference region (Qstart-Qend) to a backbone
+    # region (Tstart-Tend). We convert the reference span to bp and lay out
+    # segments sequentially along the backbone in bp space.
+    backbone_bp = {}  # tname -> {(Tstart,Tend,Qname) -> (bp_start, bp_end)}
+    backbone_len_bp = {}  # tname -> total bp length
+    for tname in all_tnames:
+        segs = sorted(
+            [s for s in chained if s['Tname'] == tname],
+            key=lambda s: s['Tstart'])
+        cum_bp = 0.0
+        mapping = {}
+        for s in segs:
+            q_bp_start = to_bp(s['Qname'], s['Qstart'])
+            q_bp_end = to_bp(s['Qname'], s['Qend'])
+            seg_bp = abs(q_bp_end - q_bp_start)
+            if seg_bp < 1:
+                seg_bp = 1
+            mapping[(s['Tstart'], s['Tend'], s['Qname'])] = (cum_bp, cum_bp + seg_bp)
+            cum_bp += seg_bp
+        backbone_bp[tname] = mapping
+        backbone_len_bp[tname] = cum_bp if cum_bp > 0 else tinfo[tname]
+
+    # Sort backbones: by estimated bp length (descending) when available,
+    # otherwise by molecule count
+    if use_genomic:
+        tnames = sorted(all_tnames, key=lambda t: (-backbone_len_bp[t], t))
+    else:
+        tnames = sorted(all_tnames, key=lambda t: (-tinfo[t], t))
     tname_idx = {t: i for i, t in enumerate(tnames)}
     n_paths = len(tnames)
 
@@ -332,18 +380,30 @@ def plot_backbone(chained, output_prefix, show_caption, input_paf):
 
     for s in chained:
         ti = tname_idx[s['Tname']]
+        key = (s['Tstart'], s['Tend'], s['Qname'])
+        if use_genomic and key in backbone_bp.get(s['Tname'], {}):
+            x0, x1 = backbone_bp[s['Tname']][key]
+        else:
+            x0, x1 = s['Tstart'], s['Tend']
         ax.add_patch(Rectangle(
-            (s['Tstart'], ti), s['Tend'] - s['Tstart'], 1,
+            (x0, ti), x1 - x0, 1,
             facecolor=qcolor.get(s['Qname'], '#999'), edgecolor='none'))
 
-    max_x = max(s['Tend'] for s in chained)
-    ax.set_xlim(0, max_x * 1.01)
+    if use_genomic:
+        max_x = max(backbone_len_bp.values()) * 1.01
+    else:
+        max_x = max(s['Tend'] for s in chained) * 1.01
+    ax.set_xlim(0, max_x)
     ax.set_ylim(n_paths, 0)
 
-    # X-axis: comma-formatted node positions
-    ax.xaxis.set_major_formatter(
-        mticker.FuncFormatter(lambda x, _: f'{int(x):,}' if x >= 1 else '0'))
-    ax.set_xlabel('Position', fontsize=11, labelpad=7)
+    if use_genomic:
+        ax.xaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f'{x / 1e6:.0f}Mb'))
+        ax.set_xlabel('Estimated Size (bp)', fontsize=11, labelpad=7)
+    else:
+        ax.xaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f'{int(x):,}' if x >= 1 else '0'))
+        ax.set_xlabel('Position (minimizer index)', fontsize=11, labelpad=7)
 
     # Y-axis
     ax.set_ylabel('Backbone (Target)', fontsize=11, labelpad=7)
@@ -523,9 +583,68 @@ def plot_reference(chained, output_prefix, show_caption, input_paf, pos_map=None
 # Main
 # ---------------------------------------------------------------------------
 
+def _find_physlr():
+    """Locate the physlr binary. Checks common locations."""
+    import shutil
+    # Check PATH first
+    p = shutil.which('physlr')
+    if p:
+        return p
+    # Check relative to this script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for candidate in [
+        os.path.join(script_dir, '..', 'target', 'release', 'physlr'),
+        os.path.join(script_dir, '..', 'target', 'debug', 'physlr'),
+        os.path.join(script_dir, 'physlr'),
+    ]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _generate_position_map(reference, k=32, w=32, step=100):
+    """Run physlr index-positions to generate a position map TSV.
+    Returns the path to the generated file, or None on failure."""
+    import subprocess
+    import tempfile
+    physlr = _find_physlr()
+    if not physlr:
+        print("Warning: physlr binary not found. Cannot generate position map.",
+              file=sys.stderr)
+        print("  Install physlr or provide --positions <pos.tsv> directly.",
+              file=sys.stderr)
+        return None
+    # Write to a temp file next to the reference
+    ref_dir = os.path.dirname(os.path.abspath(reference))
+    ref_base = os.path.splitext(os.path.basename(reference))[0]
+    pos_path = os.path.join(ref_dir, f'{ref_base}.positions.tsv')
+    # Reuse if it already exists
+    if os.path.isfile(pos_path) and os.path.getsize(pos_path) > 0:
+        print(f"Reusing existing position map: {pos_path}")
+        return pos_path
+    print(f"Generating position map from {reference}...")
+    try:
+        subprocess.run(
+            [physlr, 'index-positions', reference,
+             '-o', pos_path,
+             '-k', str(k), '-w', str(w), '--step', str(step)],
+            check=True)
+        print(f"  Wrote position map to {pos_path}")
+        return pos_path
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Warning: failed to generate position map: {e}", file=sys.stderr)
+        return None
+
+
 def main():
     if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <input.paf> <output_prefix> [--caption] [--positions <pos.tsv>]",
+        print(f"Usage: {sys.argv[0]} <input.paf> <output_prefix> [options]",
+              file=sys.stderr)
+        print(f"  --reference <genome.fa>  Reference FASTA (auto-generates position map)",
+              file=sys.stderr)
+        print(f"  --positions <pos.tsv>    Pre-computed position map (from physlr index-positions)",
+              file=sys.stderr)
+        print(f"  --caption                Show input filename as caption",
               file=sys.stderr)
         sys.exit(1)
 
@@ -534,6 +653,8 @@ def main():
     show_caption = '--caption' in sys.argv
 
     pos_map = None
+
+    # --positions takes precedence over --reference
     if '--positions' in sys.argv:
         pos_idx = sys.argv.index('--positions')
         if pos_idx + 1 < len(sys.argv):
@@ -541,6 +662,15 @@ def main():
             print(f"Loading position map: {pos_file}")
             pos_map = load_position_map(pos_file)
             print(f"  Loaded {len(pos_map)} chromosomes")
+    elif '--reference' in sys.argv:
+        ref_idx = sys.argv.index('--reference')
+        if ref_idx + 1 < len(sys.argv):
+            ref_file = sys.argv[ref_idx + 1]
+            pos_file = _generate_position_map(ref_file)
+            if pos_file:
+                print(f"Loading position map: {pos_file}")
+                pos_map = load_position_map(pos_file)
+                print(f"  Loaded {len(pos_map)} chromosomes")
 
     records = read_paf(input_paf)
     print(f"Read {len(records)} records")
@@ -565,7 +695,7 @@ def main():
         print("No segments to plot.")
         sys.exit(1)
 
-    plot_backbone(chained, output_prefix, show_caption, input_paf)
+    plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=pos_map)
     plot_reference(chained, output_prefix, show_caption, input_paf, pos_map=pos_map)
     print("Done!")
 
