@@ -54,14 +54,14 @@ Reference chromosomes colored by backbone path. Each solid-color bar represents 
 
 | Original Physlr | Physlr2 v0.27 |
 |:---:|:---:|
-| [<img src="results/comparison/original_na24143_reference_v2.png" height="300">](results/comparison/original_na24143_reference_v2.png) | [<img src="results/comparison/v027_na24143_reference.png" height="300">](results/comparison/v027_na24143_reference.png) |
+| [<img src="results/comparison/original_na24143_reference.png" height="300">](results/comparison/original_na24143_reference.png) | [<img src="results/comparison/v027_na24143_reference.png" height="300">](results/comparison/v027_na24143_reference.png) |
 | 87 backbone paths | 62 backbone paths |
 
 ### NA12878
 
 | Original Physlr | Physlr2 v0.27 |
 |:---:|:---:|
-| [<img src="results/comparison/original_na12878_reference_v2.png" height="300">](results/comparison/original_na12878_reference_v2.png) | [<img src="results/comparison/v027_na12878_reference.png" height="300">](results/comparison/v027_na12878_reference.png) |
+| [<img src="results/comparison/original_na12878_reference.png" height="300">](results/comparison/original_na12878_reference.png) | [<img src="results/comparison/v027_na12878_reference.png" height="300">](results/comparison/v027_na12878_reference.png) |
 | 183 backbone paths | 102 backbone paths |
 
 ---
