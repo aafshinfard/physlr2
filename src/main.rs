@@ -1256,10 +1256,8 @@ fn main() -> Result<()> {
                 drop(writer);
                 timer.log(&format!("Wrote position map to {}", pos_path));
 
-                let mx_to_pos =
-                    physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
-                let paf_records =
-                    physlr::map::map_paf(&ref_mxs, &mx_to_pos, &backbones, 10, 1.5);
+                let mx_to_pos = physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
+                let paf_records = physlr::map::map_paf(&ref_mxs, &mx_to_pos, &backbones, 10, 1.5);
 
                 let paf_path = format!("{}/{}.backbone.paf", outdir, prefix);
                 let mut writer = physlr::io::open_writer(&paf_path)?;
@@ -1461,10 +1459,8 @@ fn main() -> Result<()> {
                 timer.log(&format!("Wrote position map to {}", pos_path));
 
                 // Map reference to backbone paths (PAF)
-                let mx_to_pos =
-                    physlr::map::index_backbone_minimizers(&paths, &bx_to_mxs);
-                let paf_records =
-                    physlr::map::map_paf(&ref_mxs, &mx_to_pos, &paths, 10, 1.5);
+                let mx_to_pos = physlr::map::index_backbone_minimizers(&paths, &bx_to_mxs);
+                let paf_records = physlr::map::map_paf(&ref_mxs, &mx_to_pos, &paths, 10, 1.5);
 
                 let paf_path = format!("{}/{}.backbone.paf", outdir, prefix);
                 let mut writer = physlr::io::open_writer(&paf_path)?;

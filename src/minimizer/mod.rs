@@ -1151,13 +1151,15 @@ mod tests {
         let removed_exact = remove_singletons_exact(&mut bx_exact);
 
         // Both should remove the same singletons
-        assert_eq!(removed_bloom, removed_exact,
-            "bloom removed {} vs exact removed {}", removed_bloom, removed_exact);
+        assert_eq!(
+            removed_bloom, removed_exact,
+            "bloom removed {} vs exact removed {}",
+            removed_bloom, removed_exact
+        );
 
         // Verify same minimizers remain
         for key in bx_bloom.keys() {
-            assert_eq!(bx_bloom[key], bx_exact[key],
-                "mismatch for barcode {}", key);
+            assert_eq!(bx_bloom[key], bx_exact[key], "mismatch for barcode {}", key);
         }
     }
 
