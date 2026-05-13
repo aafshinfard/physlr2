@@ -411,6 +411,34 @@ pub fn extract_minimizers(seq: &[u8], k: usize, w: usize) -> Vec<u64> {
     minimizers
 }
 
+/// Extract minimizer bp positions from a sequence.
+/// Same algorithm as extract_minimizers but returns bp positions instead of hashes.
+/// Keeps duplicates to match the ref.tsv index coordinate space.
+/// Used for building minimizer-index-to-genomic-position lookup tables.
+pub fn extract_minimizer_positions(seq: &[u8], k: usize, w: usize) -> Vec<usize> {
+    let hashes = kmer_hashes(seq, k);
+    if hashes.is_empty() || w == 0 {
+        return Vec::new();
+    }
+
+    let mut positions = Vec::new();
+    let mut last_min: Option<(usize, u64)> = None;
+
+    for window_start in 0..hashes.len().saturating_sub(w - 1) {
+        let window_end = (window_start + w).min(hashes.len());
+        let window = &hashes[window_start..window_end];
+
+        let min_entry = window.iter().min_by_key(|(_, h)| *h).unwrap();
+
+        if last_min.is_none_or(|(pos, hash)| pos != min_entry.0 || hash != min_entry.1) {
+            positions.push(min_entry.0);
+            last_min = Some(*min_entry);
+        }
+    }
+
+    positions
+}
+
 /// Extract minimizers from a FASTA/FASTQ file, grouping by barcode.
 ///
 /// For linked reads, the barcode is extracted from the read header (BX:Z: tag).
@@ -496,6 +524,51 @@ pub fn index_file_ordered(
     }
 
     Ok(result)
+}
+
+/// Generate a sparse minimizer-index-to-bp-position lookup table from a FASTA file.
+///
+/// For each sequence, extracts minimizer bp positions and records every `step`-th
+/// position plus the first and last. Output is a small TSV suitable for interpolating
+/// minimizer indices to genomic coordinates in plotting scripts.
+pub fn index_positions(
+    path: &str,
+    k: usize,
+    w: usize,
+    step: usize,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let mut reader = needletail::parse_fastx_file(path)
+        .map_err(|e| anyhow::anyhow!("Cannot open {}: {}", path, e))?;
+
+    while let Some(record) = reader.next() {
+        let record = record?;
+        let name = std::str::from_utf8(record.id())
+            .unwrap_or("")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+
+        let seq = record.seq();
+        let seq_len = seq.len();
+        let positions = extract_minimizer_positions(&seq, k, w);
+        let total = positions.len();
+
+        if total == 0 {
+            continue;
+        }
+
+        for (i, &bp) in positions.iter().enumerate() {
+            if i == 0 || i == total - 1 || i % step == 0 {
+                writeln!(writer, "{}\t{}\t{}\t{}\t{}", name, i, bp, total, seq_len)?;
+            }
+        }
+
+        log::info!("{}: {} bp, {} minimizers", name, seq_len, total);
+    }
+
+    Ok(())
 }
 
 /// Extract the barcode from a FASTQ header.
