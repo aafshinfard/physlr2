@@ -101,6 +101,26 @@ enum Commands {
         w: usize,
     },
 
+    /// Generate sparse minimizer-index-to-bp-position lookup table from FASTA.
+    /// Output TSV: chrom, mx_index, bp_position, total_minimizers, seq_length.
+    /// Used by plotting scripts to convert minimizer indices to genomic coordinates.
+    IndexPositions {
+        /// Input FASTA file (same reference used for index-contigs)
+        input: String,
+        /// Output position map TSV file
+        #[arg(short, long, default_value = "-")]
+        output: String,
+        /// K-mer size
+        #[arg(short, long, default_value_t = 32)]
+        k: usize,
+        /// Window size
+        #[arg(short, long, default_value_t = 32)]
+        w: usize,
+        /// Record every Nth minimizer position (default: 100)
+        #[arg(long, default_value_t = 100)]
+        step: usize,
+    },
+
     /// Filter barcodes by minimizer count and remove singleton/repetitive minimizers
     FilterMinimizers {
         /// Input minimizer TSV file
@@ -629,6 +649,22 @@ fn main() -> Result<()> {
             let mut writer = physlr::io::open_writer(&output)?;
             physlr::minimizer::write_minimizer_list_tsv(&contig_mxs, &mut *writer)?;
             timer.log("Done indexing contigs");
+        }
+
+        Commands::IndexPositions {
+            input,
+            output,
+            k,
+            w,
+            step,
+        } => {
+            timer.log(&format!(
+                "Generating position map from {} (k={}, w={}, step={})",
+                input, k, w, step
+            ));
+            let mut writer = physlr::io::open_writer(&output)?;
+            physlr::minimizer::index_positions(&input, k, w, step, &mut *writer)?;
+            timer.log("Done generating position map");
         }
 
         Commands::FilterMinimizers {
