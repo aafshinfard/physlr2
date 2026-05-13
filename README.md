@@ -51,7 +51,7 @@ Backbone paths mapped to the GRCh38 reference genome (NA24143, stLFR):
 
 | Backbone | Reference |
 |:---:|:---:|
-| [<img src="results/comparison/v026_na24143_backbone.png" height="250">](results/comparison/v026_na24143_backbone.png) | [<img src="results/comparison/v026_na24143_reference.png" height="250">](results/comparison/v026_na24143_reference.png) |
+| [<img src="results/comparison/v027_na24143_backbone.png" height="250">](results/comparison/v027_na24143_backbone.png) | [<img src="results/comparison/v027_na24143_reference.png" height="250">](results/comparison/v027_na24143_reference.png) |
 
 <sub>Backbone view: paths colored by reference chromosome. Reference view: chromosomes colored by backbone path. Click to enlarge.</sub>
 
