@@ -558,6 +558,103 @@ pub fn homopolymer_compress(seq: &[u8]) -> (Vec<u8>, Vec<usize>) {
     (compressed, coord_map)
 }
 
+// ─── HPC FASTA compression for reference/assembly ─────────────────────────────
+
+/// Per-sequence coordinate mapping from HPC to original space.
+pub struct HpcSeqMap {
+    pub name: String,
+    pub coord_map: Vec<usize>,
+    pub original_len: usize,
+    pub compressed_len: usize,
+}
+
+/// Collection of coord maps for a FASTA file (reference or assembly).
+pub struct HpcIndex {
+    pub sequences: Vec<HpcSeqMap>,
+    pub compressed_path: std::path::PathBuf,
+}
+
+impl HpcIndex {
+    /// Look up the coord map for a sequence by name.
+    pub fn get(&self, name: &str) -> Option<&HpcSeqMap> {
+        self.sequences.iter().find(|s| s.name == name)
+    }
+
+    /// Translate a position from HPC space back to original bp coordinates.
+    /// Returns None if the sequence is not found.
+    pub fn hpc_to_original(&self, seq_name: &str, hpc_pos: usize) -> Option<usize> {
+        let seq = self.get(seq_name)?;
+        if hpc_pos >= seq.coord_map.len() {
+            // Beyond the compressed sequence — extrapolate to original length
+            Some(seq.original_len)
+        } else {
+            Some(seq.coord_map[hpc_pos])
+        }
+    }
+}
+
+/// HPC-compress a FASTA file, write the compressed version to disk,
+/// and return the coordinate maps for each sequence.
+///
+/// Used for reference and draft assembly — small files where we can
+/// afford to store per-sequence coord_maps in memory.
+pub fn hpc_compress_fasta(
+    input_path: &str,
+    output_path: &std::path::Path,
+) -> anyhow::Result<HpcIndex> {
+    use std::io::Write;
+
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(output_path)
+            .map_err(|e| anyhow::anyhow!("Cannot create {:?}: {}", output_path, e))?,
+    );
+
+    let mut sequences = Vec::new();
+    let mut reader = needletail::parse_fastx_file(input_path)
+        .map_err(|e| anyhow::anyhow!("Cannot open {}: {}", input_path, e))?;
+
+    while let Some(record) = reader.next() {
+        let record = record?;
+        let name = std::str::from_utf8(record.id())
+            .unwrap_or("")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let seq = record.seq();
+        let original_len = seq.len();
+
+        let (compressed_seq, coord_map) = homopolymer_compress(&seq);
+        let compressed_len = compressed_seq.len();
+
+        // Write as FASTA
+        writeln!(writer, ">{}", name)?;
+        writer.write_all(&compressed_seq)?;
+        writeln!(writer)?;
+
+        sequences.push(HpcSeqMap {
+            name,
+            coord_map,
+            original_len,
+            compressed_len,
+        });
+    }
+
+    writer.flush()?;
+
+    log::info!(
+        "HPC-compressed {} sequences from {} to {}",
+        sequences.len(),
+        input_path,
+        output_path.display()
+    );
+
+    Ok(HpcIndex {
+        sequences,
+        compressed_path: output_path.to_path_buf(),
+    })
+}
+
 // ─── Long-read indexing ───────────────────────────────────────────────────────
 
 /// Index a FASTQ/FASTA file for long reads.
@@ -704,6 +801,74 @@ pub fn index_positions(
         }
 
         log::info!("{}: {} bp, {} minimizers", name, seq_len, total);
+    }
+
+    Ok(())
+}
+
+/// Generate a position map from an HPC-compressed FASTA, translating
+/// bp coordinates back to original (non-HPC) space using the coord_map.
+///
+/// Runs minimizer extraction on the HPC FASTA but writes original bp positions.
+/// The seq_len column also uses the original sequence length.
+pub fn index_positions_hpc(
+    hpc_fasta_path: &str,
+    hpc_index: &HpcIndex,
+    k: usize,
+    w: usize,
+    step: usize,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let mut reader = needletail::parse_fastx_file(hpc_fasta_path)
+        .map_err(|e| anyhow::anyhow!("Cannot open {}: {}", hpc_fasta_path, e))?;
+
+    while let Some(record) = reader.next() {
+        let record = record?;
+        let name = std::str::from_utf8(record.id())
+            .unwrap_or("")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+
+        let seq = record.seq();
+        let positions = extract_minimizer_positions(&seq, k, w);
+        let total = positions.len();
+
+        if total == 0 {
+            continue;
+        }
+
+        // Look up coord_map and original length for this sequence
+        let seq_map = hpc_index.get(&name);
+        let original_len = seq_map.map_or(seq.len(), |s| s.original_len);
+
+        for (i, &hpc_bp) in positions.iter().enumerate() {
+            if i == 0 || i == total - 1 || i % step == 0 {
+                // Translate HPC bp position to original coordinates
+                let original_bp = seq_map
+                    .and_then(|s| {
+                        if hpc_bp < s.coord_map.len() {
+                            Some(s.coord_map[hpc_bp])
+                        } else {
+                            Some(s.original_len)
+                        }
+                    })
+                    .unwrap_or(hpc_bp);
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}\t{}",
+                    name, i, original_bp, total, original_len
+                )?;
+            }
+        }
+
+        log::info!(
+            "{}: {} bp (original), {} minimizers",
+            name,
+            original_len,
+            total
+        );
     }
 
     Ok(())
