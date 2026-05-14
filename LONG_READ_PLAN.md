@@ -172,8 +172,10 @@ minimizer::translate_position_map(pos_map, hpc_index) → pos_map
 - [ ] Merge to main
 
 ### Phase 4: Optimizations (future)
-- [ ] Streaming HPC compression (avoid writing full .hpc.fq to disk)
-- [ ] Parallel HPC compression
+- [ ] Parallel HPC compression (~2 hours single-threaded on CHM13 330 GB;
+  bottleneck is gzip decompression — pigz, multi-threaded flate2, or rayon)
+- [ ] Streaming HPC compression (avoid writing full .hpc.fq to disk;
+  pipe directly into ntcard/indexlr, trading 2x decompression for no disk I/O)
 - [ ] Investigate whether molecule separation can be simplified for long reads
 - [ ] Mixed-protocol support (linked + long reads together)
 
