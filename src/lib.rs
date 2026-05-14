@@ -6,6 +6,7 @@ pub mod map;
 pub mod minimizer;
 pub mod molecules;
 pub mod overlap;
+pub mod pipeline;
 pub mod protocol;
 pub mod repeat;
 pub mod report;

@@ -1179,7 +1179,6 @@ fn main() -> Result<()> {
             } else {
                 min_overlap
             };
-            let long_reads = proto == Protocol::Long;
 
             std::fs::create_dir_all(&outdir)?;
 
@@ -1190,65 +1189,35 @@ fn main() -> Result<()> {
                 proto, min_bx_count, max_bx_count, min_overlap
             ));
 
-            timer.log("Steps 1-2: Repeat filtering and indexing via ntcard/nthits/indexlr...");
-            let work_dir = std::path::Path::new(&outdir);
-            let mut bx_to_mxs = physlr::external::repeat_filter_and_index(
-                &input,
+            // Build physical map (without reference — we do that in Phase 3)
+            let pm_params = physlr::pipeline::PhysicalMapParams {
+                outdir: outdir.clone(),
+                prefix: prefix.clone(),
                 k,
                 w,
                 threads,
-                work_dir,
-                &prefix,
                 bf_size,
-                3, // multiplier
-                long_reads,
-                makebf_path.as_deref(),
-            )?;
-            timer.log(&format!("Indexed {} barcodes", bx_to_mxs.len()));
-
-            timer.log("Step 3: Filtering minimizers...");
-            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
-            physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
-            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
-            physlr::minimizer::remove_repetitive(&mut bx_to_mxs, None);
-
-            let filtered_path = format!("{}/{}.filtered.tsv", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&filtered_path)?;
-            physlr::io::write_minimizers(&bx_to_mxs, &mut *writer)?;
-            drop(writer);
-
-            timer.log("Step 4: Computing overlaps...");
-            let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
-
-            timer.log("Step 5: Filtering edges...");
-            physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
-
-            timer.log("Step 6: Separating molecules (chimeric read detection)...");
-            let mol_g = physlr::molecules::separate_molecules(
-                &g,
-                "bc+cc",
-                &rustc_hash::FxHashSet::default(),
-            );
-
-            timer.log("Step 7: Extracting backbone paths...");
-            let config = BackboneConfig {
-                prune_branch_size: prune_branches,
-                prune_bridge_size: 10,
-                prune_junction_size: 200,
+                makebf_path,
+                min_bx_count,
+                max_bx_count,
+                min_overlap,
+                edge_percentile,
+                prune_branches,
                 min_path_size,
+                reference: None, // reference mapping done in Phase 3
             };
-            let backbones = physlr::backbone::extract_named_backbones(&mol_g, &config);
 
-            let backbone_path = format!("{}/{}.backbone.path", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&backbone_path)?;
-            physlr::io::write_paths(&backbones, &mut *writer)?;
-            drop(writer);
+            let _result = if proto == Protocol::Long {
+                physlr::pipeline::run_physical_map_long(&input, &pm_params, &timer)?
+            } else {
+                physlr::pipeline::run_physical_map_linked(&input, &pm_params, &timer)?
+            };
 
-            let pm_metrics = physlr::report::compute_physical_map_metrics(&backbones, None);
-            timer.log(&format!(
-                "Physical map: {} paths, {} total molecules",
-                pm_metrics.num_paths, pm_metrics.total_molecules
-            ));
+            // Re-read backbone paths and filtered minimizers for scaffolding
+            let backbones =
+                physlr::io::read_paths(&format!("{}/{}.backbone.path", outdir, prefix))?;
+            let bx_to_mxs =
+                physlr::io::read_minimizers(&format!("{}/{}.filtered.tsv", outdir, prefix))?;
 
             // ── Phase 2: Scaffolding ────────────────────────────────────
             timer.log("=== Phase 2: Scaffolding draft assembly ===");
@@ -1282,6 +1251,7 @@ fn main() -> Result<()> {
                 physlr::report::compute_assembly_metrics(&draft_ordered, genome_size);
             let after_metrics = physlr::report::compute_assembly_metrics(&scaffolds, genome_size);
 
+            let pm_metrics = physlr::report::compute_physical_map_metrics(&backbones, None);
             let report_path = format!("{}/{}.report.json", outdir, prefix);
             let mut writer = physlr::io::open_writer(&report_path)?;
             physlr::report::write_json_report(
@@ -1298,97 +1268,20 @@ fn main() -> Result<()> {
             writeln!(stdout, "\n=== After Scaffolding ===")?;
             physlr::report::write_metrics_tsv(&after_metrics, "physlr", &mut stdout)?;
 
-            // Optional: map backbones to reference and generate plots
+            // ── Phase 3: Optional reference mapping ─────────────────────
             if let Some(ref ref_path) = reference {
                 timer.log(&format!(
                     "=== Phase 3: Reference mapping and plotting ({}) ===",
                     ref_path
                 ));
-
-                let ref_mxs = physlr::minimizer::index_file_ordered(ref_path, k, w)?;
-                timer.log(&format!("Indexed {} reference sequences", ref_mxs.len()));
-
-                let ref_tsv_path = format!("{}/{}.ref.tsv", outdir, prefix);
-                let mut writer = physlr::io::open_writer(&ref_tsv_path)?;
-                physlr::minimizer::write_minimizer_list_tsv(&ref_mxs, &mut *writer)?;
-                drop(writer);
-
-                let pos_path = format!("{}/{}.positions.tsv", outdir, prefix);
-                let mut writer = physlr::io::open_writer(&pos_path)?;
-                physlr::minimizer::index_positions(ref_path, k, w, 100, &mut *writer)?;
-                drop(writer);
-                timer.log(&format!("Wrote position map to {}", pos_path));
-
-                let mx_to_pos = physlr::map::index_backbone_minimizers(&backbones, &bx_to_mxs);
-                let paf_records = physlr::map::map_paf(&ref_mxs, &mx_to_pos, &backbones, 10, 1.5);
-
-                let paf_path = format!("{}/{}.backbone.paf", outdir, prefix);
-                let mut writer = physlr::io::open_writer(&paf_path)?;
-                for r in &paf_records {
-                    r.write_to(&mut *writer)?;
-                }
-                drop(writer);
-                timer.log(&format!(
-                    "Wrote {} PAF records to {}",
-                    paf_records.len(),
-                    paf_path
-                ));
-
-                timer.log("Generating plots...");
-                let plot_prefix = format!("{}/{}", outdir, prefix);
-                let exe_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                let script_candidates = [
-                    exe_dir
-                        .as_ref()
-                        .map(|d| d.join("plotpaf.py"))
-                        .unwrap_or_default(),
-                    exe_dir
-                        .as_ref()
-                        .map(|d| d.join("../scripts/plotpaf.py"))
-                        .unwrap_or_default(),
-                    std::path::PathBuf::from("scripts/plotpaf.py"),
-                    std::path::PathBuf::from("plotpaf.py"),
-                ];
-                let plot_script = script_candidates.iter().find(|p| p.exists());
-                if let Some(script) = plot_script {
-                    let status = std::process::Command::new("python3")
-                        .arg(script)
-                        .arg(&paf_path)
-                        .arg(&plot_prefix)
-                        .arg("--positions")
-                        .arg(&pos_path)
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            timer.log("Plots generated successfully");
-                        }
-                        Ok(s) => {
-                            eprintln!(
-                                "Warning: plotting script exited with {}",
-                                s.code().unwrap_or(-1)
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: could not run plotting script: {}. \
-                                 You can run it manually:\n  \
-                                 python3 {} {} {} --positions {}",
-                                e,
-                                script.display(),
-                                paf_path,
-                                plot_prefix,
-                                pos_path
-                            );
-                        }
-                    }
+                if proto == Protocol::Long {
+                    physlr::pipeline::map_reference_long(
+                        ref_path, &backbones, &bx_to_mxs, &pm_params, &timer,
+                    )?;
                 } else {
-                    eprintln!(
-                        "Note: plotpaf.py not found. To generate plots, run:\n  \
-                         python3 scripts/plotpaf.py {} {} --positions {}",
-                        paf_path, plot_prefix, pos_path
-                    );
+                    physlr::pipeline::map_reference_linked(
+                        ref_path, &backbones, &bx_to_mxs, &pm_params, &timer,
+                    )?;
                 }
             }
 
@@ -1430,199 +1323,39 @@ fn main() -> Result<()> {
             } else {
                 min_overlap
             };
-            let long_reads = proto == Protocol::Long;
-
-            std::fs::create_dir_all(&outdir)?;
 
             timer.log(&format!(
                 "Protocol: {} (min_count={}, max_count={}, min_overlap={})",
                 proto, min_bx_count, max_bx_count, min_overlap
             ));
 
-            // Steps 1-2: Repeat filtering + indexing via external tools
-            // (ntcard → find-ntcard-mode → nthits → physlr-makebf → indexlr -r)
-            timer.log("Steps 1-2: Repeat filtering and indexing via ntcard/nthits/indexlr...");
-            let work_dir = std::path::Path::new(&outdir);
-            let mut bx_to_mxs = physlr::external::repeat_filter_and_index(
-                &input,
+            let params = physlr::pipeline::PhysicalMapParams {
+                outdir,
+                prefix,
                 k,
                 w,
                 threads,
-                work_dir,
-                &prefix,
                 bf_size,
-                3, // multiplier
-                long_reads,
-                makebf_path.as_deref(),
-            )?;
-            timer.log(&format!("Indexed {} barcodes", bx_to_mxs.len()));
-
-            timer.log("Step 3: Filtering minimizers...");
-
-            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
-            physlr::minimizer::filter_barcodes(&mut bx_to_mxs, min_bx_count, max_bx_count);
-            physlr::minimizer::remove_singletons(&mut bx_to_mxs);
-            physlr::minimizer::remove_repetitive(&mut bx_to_mxs, None);
-
-            let filtered_path = format!("{}/{}.filtered.tsv", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&filtered_path)?;
-            physlr::io::write_minimizers(&bx_to_mxs, &mut *writer)?;
-            drop(writer);
-            timer.log(&format!("Wrote filtered minimizers to {}", filtered_path));
-
-            timer.log("Step 4: Computing overlaps...");
-            let mut g = physlr::overlap::compute_overlap(&bx_to_mxs, min_overlap);
-
-            timer.log("Step 5: Filtering edges...");
-            physlr::overlap::filter_edges_by_percentile(&mut g, edge_percentile);
-
-            let overlap_path = format!("{}/{}.overlap.tsv", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&overlap_path)?;
-            physlr::io::write_graph_tsv(&g, &mut *writer)?;
-            drop(writer);
-            timer.log(&format!("Wrote overlap graph to {}", overlap_path));
-
-            timer.log("Step 6: Separating molecules (chimeric read detection)...");
-            let mol_g = physlr::molecules::separate_molecules(
-                &g,
-                "bc+cc",
-                &rustc_hash::FxHashSet::default(),
-            );
-
-            let mol_path = format!("{}/{}.mol.tsv", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&mol_path)?;
-            physlr::io::write_graph_tsv(&mol_g, &mut *writer)?;
-            drop(writer);
-
-            timer.log("Step 7: Extracting backbone paths...");
-            let config = BackboneConfig {
-                prune_branch_size: prune_branches,
-                prune_bridge_size: 10,
-                prune_junction_size: 200,
+                makebf_path,
+                min_bx_count,
+                max_bx_count,
+                min_overlap,
+                edge_percentile,
+                prune_branches,
                 min_path_size,
+                reference,
             };
-            let paths = physlr::backbone::extract_named_backbones(&mol_g, &config);
 
-            let backbone_path = format!("{}/{}.backbone.path", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&backbone_path)?;
-            physlr::io::write_paths(&paths, &mut *writer)?;
-            drop(writer);
-
-            let metrics = physlr::report::compute_physical_map_metrics(&paths, None);
-            let metrics_path = format!("{}/{}.backbone.metrics.tsv", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&metrics_path)?;
-            physlr::report::write_physical_map_metrics_tsv(&metrics, &mut *writer)?;
-            drop(writer);
-
-            let dot_path = format!("{}/{}.backbone.dot", outdir, prefix);
-            let mut writer = physlr::io::open_writer(&dot_path)?;
-            physlr::report::backbone_to_dot(&paths, &mut *writer)?;
-            drop(writer);
+            let result = if proto == Protocol::Long {
+                physlr::pipeline::run_physical_map_long(&input, &params, &timer)?
+            } else {
+                physlr::pipeline::run_physical_map_linked(&input, &params, &timer)?
+            };
 
             timer.log(&format!(
-                "Physical map complete: {} paths, {} total molecules",
-                metrics.num_paths, metrics.total_molecules
+                "Done: {} paths, {} molecules → {}",
+                result.num_paths, result.total_molecules, result.backbone_path
             ));
-
-            // Optional: map backbones to reference and generate plots
-            if let Some(ref ref_path) = reference {
-                timer.log(&format!(
-                    "Step 8: Mapping backbones to reference {}...",
-                    ref_path
-                ));
-
-                // Index reference minimizers (ordered, for PAF mapping)
-                let ref_mxs = physlr::minimizer::index_file_ordered(ref_path, k, w)?;
-                timer.log(&format!("Indexed {} reference sequences", ref_mxs.len()));
-
-                // Write reference minimizer TSV (needed for reproducibility)
-                let ref_tsv_path = format!("{}/{}.ref.tsv", outdir, prefix);
-                let mut writer = physlr::io::open_writer(&ref_tsv_path)?;
-                physlr::minimizer::write_minimizer_list_tsv(&ref_mxs, &mut *writer)?;
-                drop(writer);
-
-                // Generate position map for coordinate conversion
-                let pos_path = format!("{}/{}.positions.tsv", outdir, prefix);
-                let mut writer = physlr::io::open_writer(&pos_path)?;
-                physlr::minimizer::index_positions(ref_path, k, w, 100, &mut *writer)?;
-                drop(writer);
-                timer.log(&format!("Wrote position map to {}", pos_path));
-
-                // Map reference to backbone paths (PAF)
-                let mx_to_pos = physlr::map::index_backbone_minimizers(&paths, &bx_to_mxs);
-                let paf_records = physlr::map::map_paf(&ref_mxs, &mx_to_pos, &paths, 10, 1.5);
-
-                let paf_path = format!("{}/{}.backbone.paf", outdir, prefix);
-                let mut writer = physlr::io::open_writer(&paf_path)?;
-                for r in &paf_records {
-                    r.write_to(&mut *writer)?;
-                }
-                drop(writer);
-                timer.log(&format!(
-                    "Wrote {} PAF records to {}",
-                    paf_records.len(),
-                    paf_path
-                ));
-
-                // Run plotting script
-                timer.log("Step 9: Generating plots...");
-                let plot_prefix = format!("{}/{}", outdir, prefix);
-                let exe_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                // Look for plotpaf.py next to the binary, or in scripts/
-                let script_candidates = [
-                    exe_dir
-                        .as_ref()
-                        .map(|d| d.join("plotpaf.py"))
-                        .unwrap_or_default(),
-                    exe_dir
-                        .as_ref()
-                        .map(|d| d.join("../scripts/plotpaf.py"))
-                        .unwrap_or_default(),
-                    std::path::PathBuf::from("scripts/plotpaf.py"),
-                    std::path::PathBuf::from("plotpaf.py"),
-                ];
-                let plot_script = script_candidates.iter().find(|p| p.exists());
-                if let Some(script) = plot_script {
-                    let status = std::process::Command::new("python3")
-                        .arg(script)
-                        .arg(&paf_path)
-                        .arg(&plot_prefix)
-                        .arg("--positions")
-                        .arg(&pos_path)
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            timer.log("Plots generated successfully");
-                        }
-                        Ok(s) => {
-                            eprintln!(
-                                "Warning: plotting script exited with {}",
-                                s.code().unwrap_or(-1)
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: could not run plotting script: {}. \
-                                 You can run it manually:\n  \
-                                 python3 {} {} {} --positions {}",
-                                e,
-                                script.display(),
-                                paf_path,
-                                plot_prefix,
-                                pos_path
-                            );
-                        }
-                    }
-                } else {
-                    eprintln!(
-                        "Note: plotpaf.py not found. To generate plots, run:\n  \
-                         python3 scripts/plotpaf.py {} {} --positions {}",
-                        paf_path, plot_prefix, pos_path
-                    );
-                }
-            }
         }
 
         Commands::Scaffolds {
