@@ -16,7 +16,7 @@
 #
 # Requirements:
 #   - physlr binary (cargo build --release)
-#   - indexlr from btllib (conda install -c bioconda btllib)
+#   - btllib (indexlr, ntcard, nthits): conda install -c bioconda btllib
 #   - Python 3 with matplotlib (for plots)
 #   - ~200 GB RAM, 16 CPU cores, 12-24 hours per sample
 
@@ -48,23 +48,20 @@ if [ ! -f "${PLOTPAF}" ]; then
     echo "WARNING: plotpaf.py not found at ${PLOTPAF}, plots will be skipped"
 fi
 
-# ── Locate indexlr ───────────────────────────────────────────────────────────
+# ── Check external tool dependencies ────────────────────────────────────────
 
-INDEXLR=""
-if command -v indexlr &>/dev/null; then
-    INDEXLR="$(command -v indexlr)"
-    echo "Using indexlr: ${INDEXLR}"
-else
-    echo "WARNING: indexlr not found. Reference visualization will use built-in indexer."
-    echo "  Install btllib for faster indexing: conda install -c bioconda btllib"
-fi
+for tool in indexlr ntcard nthits; do
+    if ! command -v "${tool}" &>/dev/null; then
+        echo "ERROR: ${tool} not found. Install btllib: conda install -c bioconda btllib"
+        exit 1
+    fi
+done
+echo "External tools: indexlr=$(command -v indexlr), ntcard=$(command -v ntcard), nthits=$(command -v nthits)"
 
 # ── Parameters ───────────────────────────────────────────────────────────────
 
 K=32
 W=32
-OVERLAP_PCT=85
-MOL_STRATEGY="distributed+sqcosbin"
 THREADS="${SLURM_CPUS_PER_TASK:-$(nproc 2>/dev/null || echo 8)}"
 THREADS=$((THREADS > 16 ? 16 : THREADS))
 
@@ -140,90 +137,56 @@ run_sample() {
 
     echo ""
     echo "============================================================"
-    echo "  ${sample}: Running pipeline"
+    echo "  ${sample}: Building physical map"
     echo "============================================================"
 
-    # Step 1: Index minimizers
-    run_step "Index minimizers" "${sample}.reads.tsv" \
-        "${PHYSLR}" index -k ${K} -w ${W} -t ${THREADS} \
-        "${DATADIR}/${sample}.R1.fq.gz" "${DATADIR}/${sample}.R2.fq.gz" \
-        -o "${sample}.reads.tsv"
-
-    # Step 2: Filter barcodes
-    run_step "Filter minimizers" "${sample}.filtered.tsv" \
-        "${PHYSLR}" filter-minimizers "${sample}.reads.tsv" \
-        -o "${sample}.filtered.tsv" -n 100 -N 5000
-
-    # Step 3: Compute overlaps
-    run_step "Compute overlaps" "${sample}.overlap.tsv" \
-        "${PHYSLR}" overlap "${sample}.filtered.tsv" \
-        -o "${sample}.overlap.tsv" -t ${THREADS}
-
-    # Step 4: Filter edges
-    run_step "Filter overlaps" "${sample}.overlap.filtered.tsv" \
-        "${PHYSLR}" filter-overlap "${sample}.overlap.tsv" \
-        -o "${sample}.overlap.filtered.tsv" -p ${OVERLAP_PCT}
-
-    # Step 5: Separate molecules
-    run_step "Separate molecules" "${sample}.molecules.tsv" \
-        "${PHYSLR}" molecules "${sample}.overlap.filtered.tsv" \
-        -o "${sample}.molecules.tsv" \
-        --strategy "${MOL_STRATEGY}" -t ${THREADS}
-
-    # Step 6: Extract backbone
-    run_step "Extract backbone" "${sample}.backbone.path" \
-        "${PHYSLR}" backbone "${sample}.molecules.tsv" \
-        -o "${sample}.backbone.path" \
-        --prune-branches 10 --prune-bridges 10 --prune-junctions 200
-
-    # Step 7: Split minimizers
-    run_step "Split minimizers" "${sample}.split.tsv" \
-        "${PHYSLR}" split-minimizers "${sample}.molecules.tsv" "${sample}.filtered.tsv" \
-        -o "${sample}.split.tsv" -t ${THREADS}
-
-    # Step 8: Merge paths
-    run_step "Merge paths" "${sample}.merged.path" \
-        "${PHYSLR}" merge-paths "${sample}.backbone.path" "${sample}.split.tsv" \
-        -o "${sample}.merged.path"
-
-    # Step 9: Physical map metrics
-    echo ""
-    echo "  === Physical map metrics ==="
-    "${PHYSLR}" path-metrics "${sample}.merged.path"
-
-    # Step 10: Visualize against reference
+    # Build physical map with reference mapping.
+    # Uses external tools (ntcard → nthits → physlr-makebf → indexlr)
+    # for repeat filtering and minimizer extraction.
+    local REF_ARG=""
     if [ -f "${DATADIR}/grch38.fa" ]; then
-        echo ""
-        echo "  === Reference visualization ==="
+        REF_ARG="--reference ${DATADIR}/grch38.fa"
+    fi
 
-        # Index reference
-        if [ ! -f "${sample}.ref.tsv" ]; then
-            if [ -n "${INDEXLR}" ]; then
-                run_step "Index reference (indexlr)" "${sample}.ref.tsv" \
-                    "${INDEXLR}" -t 5 -k ${K} -w ${W} \
-                    -o "${sample}.ref.tsv" "${DATADIR}/grch38.fa"
-            else
-                run_step "Index reference (built-in)" "${sample}.ref.tsv" \
-                    "${PHYSLR}" index-contigs "${DATADIR}/grch38.fa" \
-                    -o "${sample}.ref.tsv" -k ${K} -w ${W}
-            fi
-        fi
+    run_step "Physical map" "${OUTDIR}/${sample}.backbone.path" \
+        "${PHYSLR}" physical-map \
+        -k ${K} -w ${W} -t ${THREADS} \
+        -o "${OUTDIR}" -p "${sample}" \
+        ${REF_ARG} \
+        "${DATADIR}/${sample}.R1.fq.gz" "${DATADIR}/${sample}.R2.fq.gz"
 
-        # Map backbone to reference
-        run_step "Map to reference" "${sample}.paf" \
+    # Merge adjacent backbone paths using bridge molecule evidence
+    run_step "Split minimizers" "${OUTDIR}/${sample}.split.tsv" \
+        "${PHYSLR}" split-minimizers \
+        "${OUTDIR}/${sample}.mol.tsv" "${OUTDIR}/${sample}.filtered.tsv" \
+        -o "${OUTDIR}/${sample}.split.tsv" -t ${THREADS}
+
+    run_step "Merge paths" "${OUTDIR}/${sample}.merged.path" \
+        "${PHYSLR}" merge-paths \
+        "${OUTDIR}/${sample}.backbone.path" "${OUTDIR}/${sample}.split.tsv" \
+        -o "${OUTDIR}/${sample}.merged.path"
+
+    # Merged path metrics
+    echo ""
+    echo "  === Physical map metrics (after merge) ==="
+    "${PHYSLR}" path-metrics "${OUTDIR}/${sample}.merged.path"
+
+    # Re-map merged paths to reference for final visualization
+    if [ -f "${DATADIR}/grch38.fa" ] && [ -f "${OUTDIR}/${sample}.ref.tsv" ]; then
+        run_step "Map merged paths to reference" "${OUTDIR}/${sample}.merged.paf" \
             "${PHYSLR}" map-paf \
-            "${sample}.merged.path" "${sample}.split.tsv" "${sample}.ref.tsv" \
-            -o "${sample}.paf" -n 1 --mx-type split
+            "${OUTDIR}/${sample}.merged.path" "${OUTDIR}/${sample}.split.tsv" \
+            "${OUTDIR}/${sample}.ref.tsv" \
+            -o "${OUTDIR}/${sample}.merged.paf" -n 1 --mx-type split
 
-        # Generate plots
         if [ -f "${PLOTPAF}" ]; then
-            run_step "Generate plots" "${sample}.backbone.png" \
-                python3 "${PLOTPAF}" "${sample}.paf" "${sample}" 1
-            echo "  Plots: ${OUTDIR}/${sample}.backbone.png"
-            echo "         ${OUTDIR}/${sample}.reference.png"
+            run_step "Generate merged plots" "${OUTDIR}/${sample}.merged.backbone.png" \
+                python3 "${PLOTPAF}" "${OUTDIR}/${sample}.merged.paf" \
+                "${OUTDIR}/${sample}.merged" \
+                --positions "${OUTDIR}/${sample}.positions.tsv"
+            echo "  Plots: ${OUTDIR}/${sample}.merged.backbone.png"
+            echo "         ${OUTDIR}/${sample}.merged.reference.png"
         fi
-    else
-        echo "  [skip] Reference not available, skipping visualization"
     fi
 
     echo ""

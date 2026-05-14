@@ -96,11 +96,16 @@ physlr --version
 physlr --help
 ```
 
+### Required dependencies
+
+| Dependency | Purpose | Install |
+|------------|---------|---------|
+| [btllib](https://github.com/bcgsc/btllib) | Repeat filtering and minimizer extraction (`indexlr`, `ntcard`, `nthits`) | `conda install -c bioconda btllib` |
+
 ### Optional dependencies
 
 | Dependency | Purpose | Install |
 |------------|---------|---------|
-| [btllib](https://github.com/bcgsc/btllib) | Alternative minimizer extraction backend | `conda install -c bioconda btllib` |
 | Python 3 + matplotlib | Backbone-vs-reference visualization | `pip install matplotlib` |
 | [Snakemake](https://snakemake.readthedocs.io/) ≥ 7 | Automated workflow | `conda install -c bioconda snakemake` |
 | [QUAST](https://github.com/ablab/quast) | Reference-based assembly evaluation | `conda install -c bioconda quast` |
@@ -166,29 +171,32 @@ Arguments:
 For full control over each stage:
 
 ```bash
-# 1. Index minimizers from linked reads
-physlr index reads.fq.gz -o reads.mxs.tsv -k 32 -w 32
+# 1. Build repeat Bloom filter (ntcard → nthits → physlr-makebf)
+physlr repeat-filter reads.fq.gz -o repeats.bf -k 32 -w 32 -t 16
 
-# 2. Filter barcodes and minimizers
+# 2. Index minimizers with repeat filtering (uses indexlr from btllib)
+physlr index reads.fq.gz -o reads.mxs.tsv -k 32 -w 32 --repeat-bf repeats.bf
+
+# 3. Filter barcodes and minimizers
 physlr filter-minimizers reads.mxs.tsv -o filtered.mxs.tsv -n 100 -N 5000
 
-# 3. Compute barcode overlap graph
+# 4. Compute barcode overlap graph
 physlr overlap filtered.mxs.tsv -o overlap.tsv
 
-# 4. Filter edges by percentile
+# 5. Filter edges by percentile
 physlr filter-overlap overlap.tsv -o overlap.filtered.tsv -p 85
 
-# 5. Separate barcodes into molecules
+# 6. Separate barcodes into molecules
 physlr molecules overlap.filtered.tsv -o mol.tsv --strategy bc+cc
 
-# 6. Extract backbone paths (physical map)
+# 7. Extract backbone paths (physical map)
 physlr backbone mol.tsv -o backbone.path
 
-# 7. (Optional) Merge adjacent backbone paths
+# 8. (Optional) Merge adjacent backbone paths
 physlr split-minimizers mol.tsv filtered.mxs.tsv -o split.mxs.tsv
 physlr merge-paths backbone.path split.mxs.tsv -o merged.path
 
-# 8. (Optional) Scaffold a draft assembly
+# 9. (Optional) Scaffold a draft assembly
 physlr index-contigs draft.fa -o draft.mxs.tsv
 physlr map backbone.path filtered.mxs.tsv draft.mxs.tsv -o map.bed
 physlr bed-to-path map.bed -o scaffold.path
@@ -202,7 +210,8 @@ physlr path-to-fasta draft.fa scaffold.path -o scaffolds.fa
 ```
 Linked reads (FASTQ + barcodes)
   │
-  ├── index              Extract (k,w)-minimizers per barcode
+  ├── repeat-filter      Build repeat Bloom filter (ntcard → nthits → physlr-makebf)
+  ├── index              Extract (k,w)-minimizers per barcode (indexlr from btllib)
   ├── filter-minimizers  Remove low/high-count barcodes, singleton minimizers
   ├── overlap            Compute barcode overlap graph (shared minimizers)
   ├── filter-overlap     Remove low-weight edges by percentile

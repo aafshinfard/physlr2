@@ -526,6 +526,144 @@ pub fn index_file_ordered(
     Ok(result)
 }
 
+// ─── Homopolymer compression ──────────────────────────────────────────────────
+
+/// Compress homopolymer runs in a sequence.
+///
+/// Collapses consecutive identical bases (e.g., `AAACCCGG` → `ACG`).
+/// Returns the compressed sequence and a coordinate map where
+/// `coord_map[compressed_pos] = original_pos` for reversibility.
+pub fn homopolymer_compress(seq: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    if seq.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut compressed = Vec::with_capacity(seq.len() / 2);
+    let mut coord_map = Vec::with_capacity(seq.len() / 2);
+
+    let mut prev = seq[0];
+    compressed.push(prev);
+    coord_map.push(0);
+
+    for (i, &base) in seq.iter().enumerate().skip(1) {
+        if base != prev {
+            compressed.push(base);
+            coord_map.push(i);
+            prev = base;
+        }
+    }
+
+    compressed.shrink_to_fit();
+    coord_map.shrink_to_fit();
+    (compressed, coord_map)
+}
+
+// ─── Long-read indexing ───────────────────────────────────────────────────────
+
+/// Index a FASTQ/FASTA file for long reads.
+///
+/// Differences from linked-read indexing:
+/// - Read name is always used as the barcode (no BX:Z: extraction)
+/// - Homopolymer compression is applied before minimizer extraction
+/// - Each read is its own "barcode"
+pub fn index_file_long(
+    path: &str,
+    k: usize,
+    w: usize,
+) -> anyhow::Result<FxHashMap<String, FxHashSet<u64>>> {
+    index_file_long_inner(path, k, w, None)
+}
+
+/// Index a FASTQ/FASTA file for long reads with optional repeat filtering.
+pub fn index_file_long_with_repeat_filter(
+    path: &str,
+    k: usize,
+    w: usize,
+    repeat_bf: &crate::repeat::BloomFilter,
+) -> anyhow::Result<FxHashMap<String, FxHashSet<u64>>> {
+    index_file_long_inner(path, k, w, Some(repeat_bf))
+}
+
+/// Inner implementation for long-read indexing with optional repeat filter.
+fn index_file_long_inner(
+    path: &str,
+    k: usize,
+    w: usize,
+    repeat_bf: Option<&crate::repeat::BloomFilter>,
+) -> anyhow::Result<FxHashMap<String, FxHashSet<u64>>> {
+    let mut bx_to_mxs: FxHashMap<String, FxHashSet<u64>> = FxHashMap::default();
+
+    let mut reader = needletail::parse_fastx_file(path)
+        .map_err(|e| anyhow::anyhow!("Cannot open {}: {}", path, e))?;
+
+    let mut n_reads = 0u64;
+    let mut n_minimizers = 0u64;
+    let mut total_bases = 0u64;
+    let mut compressed_bases = 0u64;
+
+    while let Some(record) = reader.next() {
+        let record = record?;
+        let header = std::str::from_utf8(record.id()).unwrap_or("");
+
+        // Always use read name as barcode for long reads
+        let read_name = header
+            .split_whitespace()
+            .next()
+            .unwrap_or(header)
+            .to_string();
+
+        let seq = record.seq();
+        total_bases += seq.len() as u64;
+
+        // Apply homopolymer compression
+        let (compressed_seq, _coord_map) = homopolymer_compress(&seq);
+        compressed_bases += compressed_seq.len() as u64;
+
+        let mxs = if let Some(bf) = repeat_bf {
+            extract_minimizers_filtered(&compressed_seq, k, w, bf)
+        } else {
+            extract_minimizers(&compressed_seq, k, w)
+        };
+
+        n_reads += 1;
+        n_minimizers += mxs.len() as u64;
+
+        let entry = bx_to_mxs.entry(read_name).or_default();
+        for mx in mxs {
+            entry.insert(mx);
+        }
+
+        if n_reads.is_multiple_of(100_000) {
+            log::info!(
+                "Processed {} reads, {} unique read IDs, compression ratio: {:.2}%",
+                n_reads,
+                bx_to_mxs.len(),
+                if total_bases > 0 {
+                    compressed_bases as f64 / total_bases as f64 * 100.0
+                } else {
+                    100.0
+                }
+            );
+        }
+    }
+
+    log::info!(
+        "Long-read indexing: {} reads, {} minimizers, compression {}/{} bases ({:.1}%), repeat_filter={}",
+        n_reads,
+        n_minimizers,
+        compressed_bases,
+        total_bases,
+        if total_bases > 0 {
+            compressed_bases as f64 / total_bases as f64 * 100.0
+        } else {
+            100.0
+        },
+        repeat_bf.is_some()
+    );
+
+    Ok(bx_to_mxs)
+}
+
 /// Generate a sparse minimizer-index-to-bp-position lookup table from a FASTA file.
 ///
 /// For each sequence, extracts minimizer bp positions and records every `step`-th
@@ -1204,5 +1342,59 @@ mod tests {
         assert_eq!(complement_2bit(1), 2); // C -> G
         assert_eq!(complement_2bit(2), 1); // G -> C
         assert_eq!(complement_2bit(3), 0); // T -> A
+    }
+
+    // homopolymer_compress
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_homopolymer_compress_basic() {
+        let (compressed, coord_map) = homopolymer_compress(b"AAACCCGGG");
+        assert_eq!(compressed, b"ACG");
+        assert_eq!(coord_map, vec![0, 3, 6]);
+    }
+
+    #[test]
+    fn test_homopolymer_compress_no_runs() {
+        let (compressed, coord_map) = homopolymer_compress(b"ACGT");
+        assert_eq!(compressed, b"ACGT");
+        assert_eq!(coord_map, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_homopolymer_compress_single_base() {
+        let (compressed, coord_map) = homopolymer_compress(b"AAAA");
+        assert_eq!(compressed, b"A");
+        assert_eq!(coord_map, vec![0]);
+    }
+
+    #[test]
+    fn test_homopolymer_compress_empty() {
+        let (compressed, coord_map) = homopolymer_compress(b"");
+        assert!(compressed.is_empty());
+        assert!(coord_map.is_empty());
+    }
+
+    #[test]
+    fn test_homopolymer_compress_mixed() {
+        let (compressed, coord_map) = homopolymer_compress(b"AATTCCGG");
+        assert_eq!(compressed, b"ATCG");
+        assert_eq!(coord_map, vec![0, 2, 4, 6]);
+    }
+
+    #[test]
+    fn test_homopolymer_compress_reversible() {
+        let original = b"AAACGTTTAAC";
+        let (compressed, coord_map) = homopolymer_compress(original);
+        assert_eq!(compressed, b"ACGTAC");
+        for (comp_pos, &orig_pos) in coord_map.iter().enumerate() {
+            assert_eq!(compressed[comp_pos], original[orig_pos]);
+        }
+    }
+
+    #[test]
+    fn test_homopolymer_compress_with_n() {
+        let (compressed, _) = homopolymer_compress(b"AAANNNACGT");
+        assert_eq!(compressed, b"ANACGT");
     }
 }
