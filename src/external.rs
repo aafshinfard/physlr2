@@ -249,7 +249,9 @@ pub fn run_indexlr(
 
     let mut cmd = Command::new("indexlr");
 
-    if !long_reads {
+    if long_reads {
+        cmd.arg("--long");
+    } else {
         cmd.arg("--bx");
     }
 
