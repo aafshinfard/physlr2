@@ -1,10 +1,12 @@
 pub mod backbone;
+pub mod external;
 pub mod graph;
 pub mod io;
 pub mod map;
 pub mod minimizer;
 pub mod molecules;
 pub mod overlap;
+pub mod protocol;
 pub mod repeat;
 pub mod report;
 pub mod scaffold;
