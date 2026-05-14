@@ -200,6 +200,9 @@ fn run_core_pipeline(
 }
 
 /// Map backbones to reference for linked reads (direct, no HPC).
+///
+/// Uses indexlr to index the reference so minimizer hashes match the reads
+/// (both use ntHash via indexlr).
 pub fn map_reference_linked(
     ref_path: &str,
     paths: &[Vec<String>],
@@ -212,17 +215,23 @@ pub fn map_reference_linked(
         ref_path
     ));
 
-    let ref_mxs = crate::minimizer::index_file_ordered(ref_path, params.k, params.w)?;
-    timer.log(&format!("Indexed {} reference sequences", ref_mxs.len()));
+    // Index reference with indexlr (ntHash) to match read minimizers
+    let ref_mxs = crate::external::run_indexlr_reference_ordered(
+        ref_path, params.k, params.w, params.threads,
+    )?;
+    timer.log(&format!("Indexed {} reference sequences via indexlr", ref_mxs.len()));
 
     let ref_tsv_path = format!("{}/{}.ref.tsv", params.outdir, params.prefix);
     let mut writer = crate::io::open_writer(&ref_tsv_path)?;
-    crate::minimizer::write_minimizer_list_tsv(&ref_mxs, &mut *writer)?;
+    crate::external::write_minimizer_list_tsv_ordered(&ref_mxs, &mut *writer)?;
     drop(writer);
 
+    // Position map via indexlr --pos
     let pos_path = format!("{}/{}.positions.tsv", params.outdir, params.prefix);
     let mut writer = crate::io::open_writer(&pos_path)?;
-    crate::minimizer::index_positions(ref_path, params.k, params.w, 100, &mut *writer)?;
+    crate::external::run_indexlr_reference_positions(
+        ref_path, params.k, params.w, params.threads, 100, None, &mut *writer,
+    )?;
     drop(writer);
     timer.log(&format!("Wrote position map to {}", pos_path));
 
@@ -248,7 +257,7 @@ pub fn map_reference_linked(
 /// Map backbones to reference for long reads (HPC + coordinate translation).
 ///
 /// 1. HPC-compress the reference
-/// 2. Index HPC reference minimizers
+/// 2. Index HPC reference via indexlr (ntHash, matching reads)
 /// 3. Generate position map with translated coordinates
 /// 4. Map HPC reference to backbone → PAF in HPC space
 /// 5. Translate PAF coordinates back to original bp
@@ -275,30 +284,28 @@ pub fn map_reference_long(
         hpc_index.sequences.len()
     ));
 
-    // Index HPC reference minimizers (ordered)
+    // Index HPC reference with indexlr (ntHash) to match read minimizers
     let hpc_ref_str = hpc_ref_path.to_str().unwrap();
-    let ref_mxs = crate::minimizer::index_file_ordered(hpc_ref_str, params.k, params.w)?;
+    let ref_mxs = crate::external::run_indexlr_reference_ordered(
+        hpc_ref_str, params.k, params.w, params.threads,
+    )?;
     timer.log(&format!(
-        "Indexed {} HPC reference sequences",
+        "Indexed {} HPC reference sequences via indexlr",
         ref_mxs.len()
     ));
 
     // Write reference minimizer TSV
     let ref_tsv_path = format!("{}/{}.ref.tsv", params.outdir, params.prefix);
     let mut writer = crate::io::open_writer(&ref_tsv_path)?;
-    crate::minimizer::write_minimizer_list_tsv(&ref_mxs, &mut *writer)?;
+    crate::external::write_minimizer_list_tsv_ordered(&ref_mxs, &mut *writer)?;
     drop(writer);
 
-    // Generate position map with coordinates translated back to original space
+    // Position map via indexlr --pos, with HPC→original coordinate translation
     let pos_path = format!("{}/{}.positions.tsv", params.outdir, params.prefix);
     let mut writer = crate::io::open_writer(&pos_path)?;
-    crate::minimizer::index_positions_hpc(
-        hpc_ref_str,
-        &hpc_index,
-        params.k,
-        params.w,
-        100,
-        &mut *writer,
+    crate::external::run_indexlr_reference_positions(
+        hpc_ref_str, params.k, params.w, params.threads, 100,
+        Some(&hpc_index), &mut *writer,
     )?;
     drop(writer);
     timer.log(&format!(

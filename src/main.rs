@@ -1222,8 +1222,10 @@ fn main() -> Result<()> {
             // ── Phase 2: Scaffolding ────────────────────────────────────
             timer.log("=== Phase 2: Scaffolding draft assembly ===");
 
-            timer.log("Indexing draft assembly contigs...");
-            let query_mxs = physlr::minimizer::index_file_ordered(&draft, k, w)?;
+            timer.log("Indexing draft assembly contigs via indexlr...");
+            let query_mxs = physlr::external::run_indexlr_reference_ordered(
+                &draft, k, w, threads,
+            )?;
             timer.log(&format!("Indexed {} contigs", query_mxs.len()));
 
             timer.log("Mapping draft assembly to physical map...");
@@ -1379,8 +1381,8 @@ fn main() -> Result<()> {
             let bx_to_mxs = physlr::io::read_minimizers(&filtered_mxs)?;
             timer.log(&format!("Read {} filtered barcodes", bx_to_mxs.len()));
 
-            timer.log("Indexing draft assembly contigs...");
-            let query_mxs = physlr::minimizer::index_file_ordered(&draft, k, w)?;
+            timer.log("Indexing draft assembly contigs via indexlr...");
+            let query_mxs = physlr::external::run_indexlr_reference_ordered(&draft, k, w, 5)?;
             timer.log(&format!("Indexed {} contigs", query_mxs.len()));
 
             timer.log("Mapping draft assembly to physical map...");

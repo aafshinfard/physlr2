@@ -467,10 +467,7 @@ pub fn filter_paf_top_n(records: &[PafRecord], n: usize) -> Vec<usize> {
 /// For long-read pipelines where the reference was HPC-compressed before mapping,
 /// this converts qstart/qend/qlength back to real genomic bp positions using the
 /// per-sequence coord_maps from HPC compression.
-pub fn translate_paf_from_hpc(
-    records: &mut [PafRecord],
-    hpc_index: &crate::minimizer::HpcIndex,
-) {
+pub fn translate_paf_from_hpc(records: &mut [PafRecord], hpc_index: &crate::minimizer::HpcIndex) {
     for r in records.iter_mut() {
         if let Some(seq) = hpc_index.get(&r.qname) {
             r.qlength = seq.original_len;

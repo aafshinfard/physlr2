@@ -461,6 +461,226 @@ pub fn repeat_filter_and_index(
     Ok(bx_to_mxs)
 }
 
+/// Run indexlr on a reference FASTA to get ordered minimizer lists per sequence.
+///
+/// Uses `--long --id` mode (no `--bx`). Returns a map from sequence name to
+/// an ordered Vec of minimizer hashes, compatible with `map_paf`.
+///
+/// This ensures the reference uses the same ntHash function as the reads
+/// (which were also indexed by indexlr).
+pub fn run_indexlr_reference_ordered(
+    fasta_path: &str,
+    k: usize,
+    w: usize,
+    threads: usize,
+) -> Result<FxHashMap<String, Vec<u64>>> {
+    require_tool("indexlr")?;
+
+    log::info!(
+        "Running indexlr on reference (k={}, w={}, threads={})...",
+        k, w, threads
+    );
+
+    let mut cmd = Command::new("indexlr");
+    cmd.arg("--long")
+        .arg("--id")
+        .arg("-k").arg(k.to_string())
+        .arg("-w").arg(w.to_string())
+        .arg("-t").arg(threads.to_string())
+        .arg(fasta_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = cmd.spawn().with_context(|| "Failed to spawn indexlr for reference")?;
+    let stdout = child
+        .stdout
+        .ok_or_else(|| anyhow::anyhow!("Failed to capture indexlr stdout"))?;
+
+    let reader = BufReader::new(stdout);
+    let mut result: FxHashMap<String, Vec<u64>> = FxHashMap::default();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.splitn(2, '\t');
+        let name = match parts.next() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+
+        let mxs_str = match parts.next() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+
+        let mut mxs = Vec::new();
+        let mut seen = FxHashSet::default();
+        for token in mxs_str.split_whitespace() {
+            let hash_str = token.split(':').next().unwrap_or(token);
+            if let Ok(hash) = hash_str.parse::<u64>() {
+                // Deduplicate while preserving order (matches extract_minimizers behavior)
+                if seen.insert(hash) {
+                    mxs.push(hash);
+                }
+            }
+        }
+
+        log::info!("{}: {} minimizers", name, mxs.len());
+        result.insert(name, mxs);
+    }
+
+    log::info!("indexlr reference: indexed {} sequences", result.len());
+    Ok(result)
+}
+
+/// Run indexlr on a reference FASTA with `--pos` to build a position map.
+///
+/// Writes a TSV with columns: chr, minimizer_index, bp_position, total_minimizers, seq_length.
+/// The `step` parameter controls subsampling (every Nth minimizer, plus first and last).
+///
+/// For HPC mode, pass the HPC-compressed FASTA and an `HpcIndex` to translate
+/// positions back to original coordinates.
+pub fn run_indexlr_reference_positions(
+    fasta_path: &str,
+    k: usize,
+    w: usize,
+    threads: usize,
+    step: usize,
+    hpc_index: Option<&crate::minimizer::HpcIndex>,
+    writer: &mut dyn std::io::Write,
+) -> Result<()> {
+    require_tool("indexlr")?;
+
+    // First pass: get sequence lengths from the FASTA
+    let mut seq_lengths: FxHashMap<String, usize> = FxHashMap::default();
+    let mut reader = needletail::parse_fastx_file(fasta_path)
+        .map_err(|e| anyhow::anyhow!("Cannot open {}: {}", fasta_path, e))?;
+    while let Some(record) = reader.next() {
+        let record = record?;
+        let name = std::str::from_utf8(record.id())
+            .unwrap_or("")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        seq_lengths.insert(name, record.seq().len());
+    }
+
+    log::info!(
+        "Running indexlr --pos on reference (k={}, w={}, threads={})...",
+        k, w, threads
+    );
+
+    let mut cmd = Command::new("indexlr");
+    cmd.arg("--long")
+        .arg("--id")
+        .arg("--pos")
+        .arg("-k").arg(k.to_string())
+        .arg("-w").arg(w.to_string())
+        .arg("-t").arg(threads.to_string())
+        .arg(fasta_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = cmd.spawn().with_context(|| "Failed to spawn indexlr for positions")?;
+    let stdout = child
+        .stdout
+        .ok_or_else(|| anyhow::anyhow!("Failed to capture indexlr stdout"))?;
+
+    let buf_reader = BufReader::new(stdout);
+
+    for line in buf_reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.splitn(2, '\t');
+        let name = match parts.next() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+
+        let mxs_str = match parts.next() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+
+        // Parse hash:pos tokens
+        let mut positions: Vec<usize> = Vec::new();
+        let mut seen_hashes = FxHashSet::default();
+        for token in mxs_str.split_whitespace() {
+            let fields: Vec<&str> = token.split(':').collect();
+            if fields.len() >= 2 {
+                if let (Ok(hash), Ok(pos)) = (
+                    fields[0].parse::<u64>(),
+                    fields[1].parse::<usize>(),
+                ) {
+                    // Deduplicate by hash, preserving order
+                    if seen_hashes.insert(hash) {
+                        positions.push(pos);
+                    }
+                }
+            }
+        }
+
+        let total = positions.len();
+        if total == 0 {
+            continue;
+        }
+
+        // Get the appropriate sequence length
+        let (seq_len, hpc_seq_map) = if let Some(idx) = hpc_index {
+            // HPC mode: use original sequence length
+            let sm = idx.get(&name);
+            let orig_len = sm.map_or(
+                *seq_lengths.get(&name).unwrap_or(&0),
+                |s| s.original_len,
+            );
+            (orig_len, sm)
+        } else {
+            (*seq_lengths.get(&name).unwrap_or(&0), None)
+        };
+
+        for (i, &bp) in positions.iter().enumerate() {
+            if i == 0 || i == total - 1 || i % step == 0 {
+                // Translate HPC position to original if needed
+                let out_bp = if let Some(sm) = hpc_seq_map {
+                    if bp < sm.coord_map.len() {
+                        sm.coord_map[bp]
+                    } else {
+                        sm.original_len
+                    }
+                } else {
+                    bp
+                };
+                writeln!(writer, "{}\t{}\t{}\t{}\t{}", name, i, out_bp, total, seq_len)?;
+            }
+        }
+
+        log::info!("{}: {} bp, {} minimizers", name, seq_len, total);
+    }
+
+    Ok(())
+}
+
+/// Write a minimizer list TSV from ordered minimizer data (from indexlr).
+///
+/// Each line: sequence_name\thash1 hash2 hash3 ...
+pub fn write_minimizer_list_tsv_ordered(
+    ref_mxs: &FxHashMap<String, Vec<u64>>,
+    writer: &mut dyn std::io::Write,
+) -> Result<()> {
+    for (name, mxs) in ref_mxs {
+        let mx_strs: Vec<String> = mxs.iter().map(|h| h.to_string()).collect();
+        writeln!(writer, "{}\t{}", name, mx_strs.join(" "))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
