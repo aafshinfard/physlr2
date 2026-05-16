@@ -127,6 +127,109 @@ def mx_to_bp(mx_val, mx_indices, bp_positions, paf_qlength=None, map_total=None)
 
 
 # ---------------------------------------------------------------------------
+# Metrics: NG50, misassemblies
+# ---------------------------------------------------------------------------
+
+def compute_metrics(chained, pos_map=None):
+    """Compute NG50/NG75 in bp and misassembly count from chained segments.
+
+    Per-path bp lengths are computed using the position map (piecewise
+    interpolation from minimizer index to bp), matching the backbone plot.
+
+    A misassembly is a backbone path whose chained segments map to more
+    than one chromosome.
+
+    Returns dict with keys: ng50_bp, ng75_bp, genome_size_bp,
+    num_misassemblies, misassembled_paths, path_bp_lengths.
+    """
+    use_genomic = pos_map is not None
+
+    # Genome size from position map seq_len or GRCh38 hardcoded sizes
+    if use_genomic:
+        genome_size = sum(v[3] for v in pos_map.values() if v[3] > 0)
+    else:
+        genome_size = sum(GRCH38_SIZE.values())
+
+    # Per-path bp lengths (same logic as plot_backbone)
+    path_segments = defaultdict(list)
+    for s in chained:
+        path_segments[s['Tname']].append(s)
+
+    path_bp_lengths = {}
+    for tname, segs in path_segments.items():
+        total_bp = 0
+        for s in segs:
+            if use_genomic and s['Qname'] in pos_map:
+                mx_idx, bp_pos, total_mx, seq_len = pos_map[s['Qname']]
+                paf_ql = s.get('Qlength', total_mx)
+                bp_start = mx_to_bp(s['Qstart'], mx_idx, bp_pos, paf_ql, total_mx)
+                bp_end = mx_to_bp(s['Qend'], mx_idx, bp_pos, paf_ql, total_mx)
+            else:
+                bp_start = s['Qstart']
+                bp_end = s['Qend']
+            total_bp += abs(bp_end - bp_start)
+        path_bp_lengths[tname] = int(total_bp)
+
+    # NG50/NG75
+    lengths = sorted(path_bp_lengths.values(), reverse=True)
+    ng50_bp = _compute_ngxx(lengths, genome_size, 0.5)
+    ng75_bp = _compute_ngxx(lengths, genome_size, 0.75)
+
+    # Misassemblies: paths with chained segments on >1 chromosome
+    misassembled = []
+    for tname, segs in path_segments.items():
+        chroms = set(s['Qname'] for s in segs)
+        if len(chroms) > 1:
+            misassembled.append(tname)
+
+    return {
+        'ng50_bp': ng50_bp,
+        'ng75_bp': ng75_bp,
+        'genome_size_bp': genome_size,
+        'num_misassemblies': len(misassembled),
+        'misassembled_paths': misassembled,
+        'path_bp_lengths': path_bp_lengths,
+        'num_paths': len(path_segments),
+    }
+
+
+def _compute_ngxx(lengths, genome_size, fraction):
+    """Compute NGxx from sorted (descending) lengths and genome size."""
+    if not lengths or genome_size == 0:
+        return 0
+    target = genome_size * fraction
+    cumsum = 0
+    for length in lengths:
+        cumsum += length
+        if cumsum >= target:
+            return length
+    return lengths[-1] if lengths else 0
+
+
+def _format_bp(bp):
+    """Format bp value as human-readable string (e.g. 142.3 Mbp)."""
+    if bp >= 1_000_000:
+        return f"{bp / 1_000_000:.1f} Mbp"
+    elif bp >= 1_000:
+        return f"{bp / 1_000:.1f} kbp"
+    return f"{bp} bp"
+
+
+def write_metrics_tsv(metrics, output_prefix):
+    """Write metrics to a TSV file alongside the plots."""
+    path = f"{output_prefix}.metrics.tsv"
+    with open(path, 'w') as f:
+        f.write(f"Paths\t{metrics['num_paths']}\n")
+        f.write(f"Genome size (bp)\t{metrics['genome_size_bp']}\n")
+        f.write(f"NG50 (bp)\t{metrics['ng50_bp']}\n")
+        f.write(f"NG75 (bp)\t{metrics['ng75_bp']}\n")
+        f.write(f"Misassemblies\t{metrics['num_misassemblies']}\n")
+        if metrics['misassembled_paths']:
+            f.write(f"Misassembled paths\t{','.join(str(p) for p in metrics['misassembled_paths'])}\n")
+    print(f"Wrote metrics to {path}")
+
+
+# ---------------------------------------------------------------------------
 # PAF I/O
 # ---------------------------------------------------------------------------
 
@@ -313,7 +416,7 @@ def _make_legend(ax, handles, labels, title, fontsize=9, expand=False):
 # Plot 1: Backbone coverage
 # ---------------------------------------------------------------------------
 
-def plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=None):
+def plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=None, metrics=None):
     # Collect all backbone names and their molecule counts
     tinfo = {}
     for s in chained:
@@ -414,6 +517,21 @@ def plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=None)
     labels = list(qnames)
     _make_legend(ax, handles, labels, 'Chromosome', expand=True)
 
+    # Metrics annotation
+    if metrics:
+        lines = [
+            f"Paths: {metrics['num_paths']}",
+            f"NG50: {_format_bp(metrics['ng50_bp'])}",
+            f"NG75: {_format_bp(metrics['ng75_bp'])}",
+        ]
+        if metrics['num_misassemblies'] > 0:
+            lines.append(f"Misassemblies: {metrics['num_misassemblies']}")
+        ax.text(0.99, 0.02, '\n'.join(lines),
+                transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
+                horizontalalignment='right', fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                          edgecolor='#CCCCCC', alpha=0.9))
+
     if show_caption:
         fig.text(0.45, 0.004, input_paf, ha='center', fontsize=5,
                  color='#AAAAAA', style='italic')
@@ -429,7 +547,7 @@ def plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=None)
 # Plot 2: Reference coverage
 # ---------------------------------------------------------------------------
 
-def plot_reference(chained, output_prefix, show_caption, input_paf, pos_map=None):
+def plot_reference(chained, output_prefix, show_caption, input_paf, pos_map=None, metrics=None):
     qnames = sorted({s['Qname'] for s in chained}, key=chrom_sort_key)
     qidx = {q: i + 1 for i, q in enumerate(qnames)}
     n_chroms = len(qnames)
@@ -568,6 +686,21 @@ def plot_reference(chained, output_prefix, show_caption, input_paf, pos_map=None
 
     _make_legend(ax, handles, labels, 'Backbone', fontsize=8, expand=True)
 
+    # Metrics annotation
+    if metrics:
+        lines = [
+            f"Paths: {metrics['num_paths']}",
+            f"NG50: {_format_bp(metrics['ng50_bp'])}",
+            f"NG75: {_format_bp(metrics['ng75_bp'])}",
+        ]
+        if metrics['num_misassemblies'] > 0:
+            lines.append(f"Misassemblies: {metrics['num_misassemblies']}")
+        ax.text(0.99, 0.02, '\n'.join(lines),
+                transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
+                horizontalalignment='right', fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                          edgecolor='#CCCCCC', alpha=0.9))
+
     if show_caption:
         fig.text(0.45, 0.004, input_paf, ha='center', fontsize=5,
                  color='#AAAAAA', style='italic')
@@ -695,8 +828,16 @@ def main():
         print("No segments to plot.")
         sys.exit(1)
 
-    plot_backbone(chained, output_prefix, show_caption, input_paf, pos_map=pos_map)
-    plot_reference(chained, output_prefix, show_caption, input_paf, pos_map=pos_map)
+    metrics = compute_metrics(chained, pos_map=pos_map)
+    print(f"NG50: {_format_bp(metrics['ng50_bp'])}, "
+          f"NG75: {_format_bp(metrics['ng75_bp'])}, "
+          f"Misassemblies: {metrics['num_misassemblies']}")
+
+    plot_backbone(chained, output_prefix, show_caption, input_paf,
+                  pos_map=pos_map, metrics=metrics)
+    plot_reference(chained, output_prefix, show_caption, input_paf,
+                   pos_map=pos_map, metrics=metrics)
+    write_metrics_tsv(metrics, output_prefix)
     print("Done!")
 
 
